@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use log::*;
 
+use itertools::Itertools;
+
 /** A data structure to keep track of equalities between expressions.
 
 Check out the [background tutorial](crate::tutorials::_01_background)
@@ -58,6 +60,8 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     unionfind: UnionFind,
     /// Stores the original node represented by each non-canonical id
     nodes: Vec<L>,
+    // Observations
+    observations: HashMap<Id, Id>, 
     /// Stores each enode's `Id`, not the `Id` of the eclass.
     /// Enodes in the memo are canonicalized at each rebuild, but after rebuilding new
     /// unions can cause them to become out of date.
@@ -116,6 +120,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             classes: Default::default(),
             unionfind: Default::default(),
             nodes: Default::default(),
+            observations: Default::default(),
             clean: false,
             explain: None,
             pending: Default::default(),
@@ -625,6 +630,7 @@ where
         EGraph {
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
+            observations: src_egraph.observations,
             unionfind: src_egraph.unionfind,
             memo: src_egraph.memo.into_iter().map(kv_map).collect(),
             pending: src_egraph.pending,
@@ -819,6 +825,20 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     pub fn add_expr(&mut self, expr: &RecExpr<L>) -> Id {
         let id = self.add_expr_uncanonical(expr);
         self.find(id)
+    }
+    
+    /// [`add_observation`]: EGraph::add_observation()
+    pub fn add_observation(&mut self, in_expr: &RecExpr<L>, obs_expr: &RecExpr<L>) -> (Id, Id) {
+        let observed_id = self.add_expr_uncanonical(in_expr);
+        let canon_observed = self.find(observed_id);
+        // TODO - implement a merge observations routine!
+        assert!(!self.observations.contains_key(&canon_observed));
+        let observation_id = self.add_expr_uncanonical(obs_expr);
+        
+        let canon_observation = self.find(observation_id);
+        let old_obs = self.observations.insert(canon_observed, canon_observation);
+        assert!(old_obs.is_none());
+        (canon_observed, canon_observation)
     }
 
     /// Similar to [`add_expr`](EGraph::add_expr) but the `Id` returned may not be canonical
@@ -1436,6 +1456,54 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             explain.with_nodes(&self.nodes).check_each_explain(rules)
         } else {
             panic!("Can't check explain when explanations are off");
+        }
+    }
+
+    /// Automata Minimization
+    pub fn rebuild_observations(&mut self) {
+        let observed : Vec<Id> = self.observations.keys().cloned().collect();
+        // Initial unrefined partition - all observed entities in one group
+        let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
+        for i in observed.iter() {
+            partmap.insert(i.clone(), observed.clone());
+        }
+
+        loop {
+            println!("Partmap {:?}", partmap);
+            let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
+
+            // Create z mapping: state -> (head, tuple of partitions for args)
+            let z: HashMap<Id, (&L, Vec<Vec<Id>>)> = self.observations.iter()
+                .map(|(state, transition)| {
+                    let enode = self.id_to_node(*transition);
+                    let partition_tuple: Vec<Vec<Id>> = enode.children().iter()
+                        .map(|x| {
+                            partmap.get(x)
+                                .map(|partition| partition.clone())
+                                .unwrap_or_else(|| vec![x.clone()])
+                        })
+                        .collect();
+                    (state.clone(), (enode, partition_tuple))
+                })
+                .collect();
+            
+            // Group by z values
+            for (_, equivs) in observed.iter()
+                .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
+                .group_by(|state| z[*state].clone())
+                .into_iter()
+            {
+                let equivs: Vec<Id> = equivs.cloned().collect();
+                for i in &equivs {
+                    newpartmap.insert(i.clone(), equivs.clone());
+                }
+            }
+            
+            // Check for convergence
+            if newpartmap == partmap {
+                break;
+            }
+            partmap = newpartmap;
         }
     }
 }
