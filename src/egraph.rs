@@ -1459,8 +1459,39 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
     }
 
-    /// Automata Minimization
+    fn propagate_observations_to_child(&self, id : Id, to_observe : &mut HashSet<Id>) {
+        if self.observations.contains_key(&id) || to_observe.contains(&id) {
+            return;
+        }
+
+        let enode = self.id_to_node(id);
+        if enode.is_leaf() {
+            return;
+        }
+        
+        to_observe.insert(id);
+
+        for child in enode.children() {
+            self.propagate_observations_to_child(*child, to_observe);
+        }
+    }
+
+    /// Propagate observations to children
+    fn propagate_observations(&mut self) {
+        let mut to_observe : HashSet<Id> = HashSet::default();
+        for (state, transition) in self.observations.iter() {
+            self.propagate_observations_to_child(transition.clone(), &mut to_observe);
+        }
+
+        for id in to_observe.iter() {
+            self.observations.insert(*id, *id);
+        }
+        println!("Observations {:?}", self.observations);
+    }
+    
+        /// Automata Minimization
     pub fn rebuild_observations(&mut self) {
+        self.propagate_observations();
         let observed : Vec<Id> = self.observations.keys().cloned().collect();
         // Initial unrefined partition - all observed entities in one group
         let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
@@ -1473,9 +1504,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
             // Create z mapping: state -> (head, tuple of partitions for args)
-            let z: HashMap<Id, (&L, Vec<Vec<Id>>)> = self.observations.iter()
+            let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self.observations.iter()
                 .map(|(state, transition)| {
-                    let enode = self.id_to_node(*transition);
+                    // TODO: Implement a merging of observations after rebuild?
+                    let enode = self.id_to_node(self.find(*transition));
+                    println!("{} -> {:?}", transition, enode);
                     let partition_tuple: Vec<Vec<Id>> = enode.children().iter()
                         .map(|x| {
                             partmap.get(x)
@@ -1483,9 +1516,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                                 .unwrap_or_else(|| vec![x.clone()])
                         })
                         .collect();
-                    (state.clone(), (enode, partition_tuple))
+                    // TODO: derive an integer from the enode that defines its type 
+                    (state.clone(), (format!("{:?}",enode.discriminant()), partition_tuple))
                 })
                 .collect();
+            println!("Z-map {:?}", z);
             
             // Group by z values
             for (_, equivs) in observed.iter()
@@ -1504,6 +1539,12 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 break;
             }
             partmap = newpartmap;
+        }
+
+        for part in partmap.values() {
+            for j in part.iter() {
+                self.union(*j, part[0]);
+            }
         }
     }
 }
