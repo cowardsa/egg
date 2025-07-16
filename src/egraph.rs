@@ -1265,6 +1265,10 @@ impl<L: Language + Display, N: Analysis<L>> EGraph<L, N> {
 impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     #[inline(never)]
     fn rebuild_classes(&mut self) -> usize {
+
+        // Rebuild observations
+        self.rebuild_observations();
+
         let mut classes_by_op = std::mem::take(&mut self.classes_by_op);
         classes_by_op.values_mut().for_each(|ids| ids.clear());
 
@@ -1308,6 +1312,18 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             let unique: HashSet<Id> = ids.iter().copied().collect();
             assert_eq!(ids.len(), unique.len());
         }
+
+
+        // Deduplicate Observations
+        let mut new_observations = HashMap::default();
+        for (state, transition) in self.observations.iter() {
+            if let Some(obs) = new_observations.get(&self.find(*state)) {
+                assert_eq!(self.find(*transition), *obs);
+            }
+            new_observations.insert(self.find(*state), self.find(*transition));
+        }
+
+        self.observations = new_observations.clone();
 
         self.classes_by_op = classes_by_op;
         trimmed
@@ -1479,14 +1495,14 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Propagate observations to children
     fn propagate_observations(&mut self) {
         let mut to_observe : HashSet<Id> = HashSet::default();
-        for (state, transition) in self.observations.iter() {
-            self.propagate_observations_to_child(transition.clone(), &mut to_observe);
+        for (_, transition) in self.observations.iter() {
+            self.propagate_observations_to_child(self.find(*transition), &mut to_observe);
         }
 
         for id in to_observe.iter() {
             self.observations.insert(*id, *id);
         }
-        println!("Observations {:?}", self.observations);
+        // println!("Observations {:?}", self.observations);
     }
     
         /// Automata Minimization
@@ -1500,15 +1516,14 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
 
         loop {
-            println!("Partmap {:?}", partmap);
+            // println!("Partmap {:?}", partmap);
             let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
             // Create z mapping: state -> (head, tuple of partitions for args)
             let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self.observations.iter()
                 .map(|(state, transition)| {
-                    // TODO: Implement a merging of observations after rebuild?
                     let enode = self.id_to_node(self.find(*transition));
-                    println!("{} -> {:?}", transition, enode);
+                    // println!("{} -> {:?}", transition, enode);
                     let partition_tuple: Vec<Vec<Id>> = enode.children().iter()
                         .map(|x| {
                             partmap.get(x)
@@ -1520,7 +1535,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     (state.clone(), (format!("{:?}",enode.discriminant()), partition_tuple))
                 })
                 .collect();
-            println!("Z-map {:?}", z);
+            // println!("Z-map {:?}", z);
             
             // Group by z values
             for (_, equivs) in observed.iter()

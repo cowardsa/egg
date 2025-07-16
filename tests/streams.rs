@@ -4,6 +4,7 @@ define_language! {
     enum StreamLanguage {
         Num(i32),
         "Cons" = Cons([Id; 2]),
+        "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
         Symbol(Symbol),
     }
@@ -27,7 +28,7 @@ fn simple_tests() {
     let ids_b = egraph.add_observation(&b, &bstream);
     // egraph.add_observation(&bstream, &bstream);
     // egraph.add_observation(&bstream1, &bstream1);
-    egraph.rebuild_observations();
+    egraph.rebuild();
     assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
 
@@ -48,9 +49,19 @@ fn commutative() {
     println!("E-Graph Size {}", runner.egraph.number_of_classes());
     runner = runner.run(&make_rules());
     println!("E-Graph Size {}", runner.egraph.number_of_classes());
-    runner.egraph.rebuild_observations();
+    // runner.egraph.rebuild_observations();
+    // runner.egraph.dot().to_dot("commute.dot");
     
     assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+}
 
-
+#[test]
+fn simple_trees() {
+    let mut egraph = EGraph::<StreamLanguage, ()>::default();
+    
+    let ids_a = egraph.add_observation(&"tree1".parse().unwrap(), &"(Node 1 tree1 tree1)".parse().unwrap());
+    let ids_b = egraph.add_observation(&"tree2".parse().unwrap(), &"(Node 1 (Node 1 tree2 tree2) (Node 1 tree2 tree2))".parse().unwrap());
+    egraph.rebuild();
+    
+    assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
