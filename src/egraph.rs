@@ -1266,8 +1266,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     #[inline(never)]
     fn rebuild_classes(&mut self) -> usize {
 
-        // Rebuild observations
-        self.rebuild_observations();
+
 
         let mut classes_by_op = std::mem::take(&mut self.classes_by_op);
         classes_by_op.values_mut().for_each(|ids| ids.clear());
@@ -1440,7 +1439,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let old_n_eclasses = self.number_of_classes();
 
         let start = Instant::now();
-
+        
+        // Rebuild observations - must call before processing unions - which propagates the congruence
+        self.rebuild_observations();
+        
         let n_unions = self.process_unions();
         let trimmed_nodes = self.rebuild_classes();
 
@@ -1516,7 +1518,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
 
         loop {
-            // println!("Partmap {:?}", partmap);
+            println!("Partmap {:?}", partmap);
             let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
             // Create z mapping: state -> (head, tuple of partitions for args)

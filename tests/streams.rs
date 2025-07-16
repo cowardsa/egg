@@ -65,3 +65,20 @@ fn simple_trees() {
     
     assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
+
+#[test]
+fn simple_dfa() {
+    let mut egraph = EGraph::<StreamLanguage, ()>::default();
+    
+    egraph.add_observation(&"one".parse().unwrap(), &"(Node False two three)".parse().unwrap());
+    let two = egraph.add_observation(&"two".parse().unwrap(), &"(Node False four three)".parse().unwrap());
+    let three = egraph.add_observation(&"three".parse().unwrap(), &"(Node False five three)".parse().unwrap());
+    let four = egraph.add_observation(&"four".parse().unwrap(), &"(Node True five four)".parse().unwrap());
+    let five = egraph.add_observation(&"five".parse().unwrap(), &"(Node True four four)".parse().unwrap());
+    
+    egraph.rebuild();
+    egraph.dot().to_dot("dfa.dot");
+    
+    assert_eq!(egraph.find(two.0), egraph.find(three.0));
+    assert_eq!(egraph.find(four.0), egraph.find(five.0));
+}
