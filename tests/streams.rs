@@ -9,6 +9,7 @@ define_language! {
     enum StreamLanguage {
         Num(i32),
         "Cons" = Cons([Id; 2]),
+        "S" = Successor([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
         "Map" = Map([Id; 2]),
@@ -108,6 +109,7 @@ fn make_rules() -> Vec<Rewrite> {
 
 #[test]
 fn simple_ones() {
+    // Basic example inspired by Cocaml
     let mut egraph = EGraph::default();
     let a = "a".parse().unwrap();
     let astream = "(Cons 1 a)".parse().unwrap();
@@ -122,6 +124,7 @@ fn simple_ones() {
 
 #[test]
 fn commutative() {
+    // From Phil Zucker's Blog: https://www.philipzucker.com/coegraph/
     let mut runner : egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
     // let-rec ab = cons( (a + b) ab)
@@ -136,14 +139,13 @@ fn commutative() {
     println!("E-Graph Size {}", runner.egraph.number_of_classes());
     runner = runner.run(&make_rules());
     println!("E-Graph Size {}", runner.egraph.number_of_classes());
-    // runner.egraph.rebuild_observations();
-    // runner.egraph.dot().to_dot("commute.dot");
     
     assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
 }
 
 #[test]
 fn simple_trees() {
+    // From Wojtek's Slack Example
     let mut egraph = EGraph::default();
     
     let ids_a = egraph.add_observation(&"tree1".parse().unwrap(), &"(Node 1 tree1 tree1)".parse().unwrap());
@@ -155,6 +157,7 @@ fn simple_trees() {
 
 #[test]
 fn simple_dfa() {
+    // From Phil Zucker's Blog: https://www.philipzucker.com/naive_automata/
     let mut egraph = EGraph::default();
     
     egraph.add_observation(&"one".parse().unwrap(), &"(Node False two three)".parse().unwrap());
@@ -172,6 +175,7 @@ fn simple_dfa() {
 
 #[test]
 fn cocaml_map() {
+    // Cocaml example
     let mut runner : egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let alt = runner.egraph.add_observation(&"alt".parse().unwrap(), &"(Cons 1 (Cons 2 alt))".parse().unwrap());
     let map = runner.egraph.add_expr(&"(Map incr alt)".parse().unwrap());
@@ -189,6 +193,7 @@ fn cocaml_map() {
 
 #[test]
 fn cocaml_elements() {
+    // Cocaml example of analysis
     let mut egraph = EGraph::default();
     let alt = egraph.add_observation(&"alt".parse().unwrap(), &"(Cons 1 (Cons 2 alt))".parse().unwrap());
     let ones = egraph.add_observation(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());   
@@ -204,4 +209,15 @@ fn cocaml_elements() {
         egraph[alt.0].data.elements,
         HashSet::from([1,2])
     );
+}
+
+#[test]
+fn smt_successor() {
+    // Example taken from SMT paper Example 2 Section 3: 
+    // https://homepage.divms.uiowa.edu/~ajreynol/cade15.pdf
+    let mut egraph = EGraph::default();
+    let a = egraph.add_observation(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
+    let b = egraph.add_observation(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
+    egraph.rebuild();
+    assert_eq!(egraph.find(a.0), egraph.find(b.0));
 }
