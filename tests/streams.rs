@@ -2,8 +2,8 @@ use egg::*;
 use egg::{rewrite as rw};
 use std::collections::HashSet;
 
-pub type EGraph = egg::EGraph<StreamLanguage, ConstantFold>;
-pub type Rewrite = egg::Rewrite<StreamLanguage, ConstantFold>;
+pub type EGraph = egg::EGraph<StreamLanguage, StreamsAnalysis>;
+pub type Rewrite = egg::Rewrite<StreamLanguage, StreamsAnalysis>;
 
 define_language! {
     enum StreamLanguage {
@@ -17,13 +17,19 @@ define_language! {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StreamsData {
+    constant: Option<(i32, PatternAst<StreamLanguage>)>,   // For constant folding
+    elements: HashSet<i32>,                                // For stream elements
+}
+
 #[derive(Default)]
-pub struct ConstantFold;
-impl Analysis<StreamLanguage> for ConstantFold {
-    type Data = (Option<(i32, PatternAst<StreamLanguage>)>, HashSet<i32>);
+pub struct StreamsAnalysis;
+impl Analysis<StreamLanguage> for StreamsAnalysis {
+    type Data = StreamsData; // (Option<(i32, PatternAst<StreamLanguage>)>, HashSet<i32>);
 
     fn make(egraph: &mut EGraph, enode: &StreamLanguage) -> Self::Data {
-        let x = |i: &Id| egraph[*i].data.0.as_ref().map(|d| d.0);
+        let x = |i: &Id| egraph[*i].data.constant.as_ref().map(|d| d.0);
         let constant = match enode {
             StreamLanguage::Num(c) => Some((*c, format!("{}", c).parse().unwrap())),
             StreamLanguage::Add([a, b]) => {
@@ -36,26 +42,42 @@ impl Analysis<StreamLanguage> for ConstantFold {
             _ => None,
         };
 
-        let y = |i: &Id| &egraph[*i].data.1;
+        // How to construct the elements set
+        let y = |i: &Id| &egraph[*i].data.elements;
         let mut set = HashSet::new();
         match enode {
             StreamLanguage::Num(c) => {set.insert(*c);},
-            StreamLanguage::Cons([a, b]) => {set.union(&y(a));},
-            _ => (),
+            StreamLanguage::Cons(_) => {
+                for child in enode.children() {
+                    set.extend(y(child));
+                }
+            },
+            _ => ()
         };
-        (constant, set)
+        StreamsData{constant : constant, elements: set}
     }
 
     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        merge_option(&mut to.0, from.0, |a, b| {
+        let mut merge = 
+        merge_option(&mut to.constant, from.constant, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
             DidMerge(false, false)
-        })
+        });
+
+        // Define how to merge the element sets - this is a join
+        let to_elts_orig = to.elements.len();
+        to.elements.extend(&from.elements);
+
+        // Identify whether the merge should propagate
+        merge.0 |= to_elts_orig != to.elements.len();
+        merge.1 |= from.elements.len() != to.elements.len();
+
+        merge
     }
 
     fn modify(egraph: &mut EGraph, id: Id) {
         let data = egraph[id].data.clone();
-        if let Some((c, pat)) = data.0 {
+        if let Some((c, pat)) = data.constant {
             if egraph.are_explanations_enabled() {
                 egraph.union_instantiations(
                     &pat,
@@ -85,7 +107,7 @@ fn make_rules() -> Vec<Rewrite> {
 }
 
 #[test]
-fn simple_tests() {
+fn simple_ones() {
     let mut egraph = EGraph::default();
     let a = "a".parse().unwrap();
     let astream = "(Cons 1 a)".parse().unwrap();
@@ -100,7 +122,7 @@ fn simple_tests() {
 
 #[test]
 fn commutative() {
-    let mut runner : egg::Runner<StreamLanguage, ConstantFold> = Runner::default();
+    let mut runner : egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
     // let-rec ab = cons( (a + b) ab)
     let ab = "ab".parse().unwrap();
@@ -149,8 +171,8 @@ fn simple_dfa() {
 }
 
 #[test]
-fn map() {
-    let mut runner : egg::Runner<StreamLanguage, ConstantFold> = Runner::default();
+fn cocaml_map() {
+    let mut runner : egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let alt = runner.egraph.add_observation(&"alt".parse().unwrap(), &"(Cons 1 (Cons 2 alt))".parse().unwrap());
     let map = runner.egraph.add_expr(&"(Map incr alt)".parse().unwrap());
     runner = runner.run(&make_rules());
@@ -160,5 +182,26 @@ fn map() {
     assert_eq!(
         runner.egraph.add_expr(&"(Cons 2 (Cons 3 (Map incr alt)))".parse().unwrap()),
         runner.egraph.find(map)
+    );
+
+    println!("Alt Elements: {:?}", runner.egraph[map].data.elements);
+}
+
+#[test]
+fn cocaml_elements() {
+    let mut egraph = EGraph::default();
+    let alt = egraph.add_observation(&"alt".parse().unwrap(), &"(Cons 1 (Cons 2 alt))".parse().unwrap());
+    let ones = egraph.add_observation(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());   
+    egraph.rebuild();
+
+    // Check (map alt) = 2 :: 3 :: (map alt)
+    assert_eq!(
+        egraph[ones.0].data.elements,
+        HashSet::from([1])
+    );
+    
+    assert_eq!(
+        egraph[alt.0].data.elements,
+        HashSet::from([1,2])
     );
 }
