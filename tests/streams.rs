@@ -125,7 +125,7 @@ fn simple_ones() {
 #[test]
 fn commutative() {
     // From Phil Zucker's Blog: https://www.philipzucker.com/coegraph/
-    let mut runner : egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let mut runner : Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
     // let-rec ab = cons( (a + b) ab)
     let ab = "ab".parse().unwrap();

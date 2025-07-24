@@ -61,7 +61,7 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     /// Stores the original node represented by each non-canonical id
     nodes: Vec<L>,
     // Observations
-    observations: HashMap<Id, Id>, 
+    observations: HashMap<Id, Id>,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
     /// Enodes in the memo are canonicalized at each rebuild, but after rebuilding new
     /// unions can cause them to become out of date.
@@ -826,7 +826,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let id = self.add_expr_uncanonical(expr);
         self.find(id)
     }
-    
+
     /// [`add_observation`]: EGraph::add_observation()
     pub fn add_observation(&mut self, in_expr: &RecExpr<L>, obs_expr: &RecExpr<L>) -> (Id, Id) {
         let observed_id = self.add_expr_uncanonical(in_expr);
@@ -834,7 +834,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // TODO - implement a merge observations routine!
         assert!(!self.observations.contains_key(&canon_observed));
         let observation_id = self.add_expr_uncanonical(obs_expr);
-        
+
         let canon_observation = self.find(observation_id);
         let old_obs = self.observations.insert(canon_observed, canon_observation);
         assert!(old_obs.is_none());
@@ -1265,9 +1265,6 @@ impl<L: Language + Display, N: Analysis<L>> EGraph<L, N> {
 impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     #[inline(never)]
     fn rebuild_classes(&mut self) -> usize {
-
-
-
         let mut classes_by_op = std::mem::take(&mut self.classes_by_op);
         classes_by_op.values_mut().for_each(|ids| ids.clear());
 
@@ -1311,7 +1308,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             let unique: HashSet<Id> = ids.iter().copied().collect();
             assert_eq!(ids.len(), unique.len());
         }
-
 
         // Deduplicate Observations
         let mut new_observations = HashMap::default();
@@ -1439,10 +1435,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let old_n_eclasses = self.number_of_classes();
 
         let start = Instant::now();
-        
+
         // Rebuild observations - must call before processing unions - which propagates the congruence
         self.rebuild_observations();
-        
+
         let n_unions = self.process_unions();
         let trimmed_nodes = self.rebuild_classes();
 
@@ -1477,7 +1473,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
     }
 
-    fn propagate_observations_to_child(&self, id : Id, to_observe : &mut HashSet<Id>) {
+    fn propagate_observations_to_child(&self, id: Id, to_observe: &mut HashSet<Id>) {
         if self.observations.contains_key(&id) || to_observe.contains(&id) {
             return;
         }
@@ -1486,7 +1482,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         if enode.is_leaf() {
             return;
         }
-        
+
         to_observe.insert(id);
 
         for child in enode.children() {
@@ -1496,7 +1492,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// Propagate observations to children
     fn propagate_observations(&mut self) {
-        let mut to_observe : HashSet<Id> = HashSet::default();
+        let mut to_observe: HashSet<Id> = HashSet::default();
         for (_, transition) in self.observations.iter() {
             self.propagate_observations_to_child(self.find(*transition), &mut to_observe);
         }
@@ -1506,11 +1502,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
         // println!("Observations {:?}", self.observations);
     }
-    
-        /// Automata Minimization
+
+    /// Automata Minimization
     pub fn rebuild_observations(&mut self) {
         self.propagate_observations();
-        let observed : Vec<Id> = self.observations.keys().cloned().collect();
+        let observed: Vec<Id> = self.observations.keys().cloned().collect();
         // Initial unrefined partition - all observed entities in one group
         let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
         for i in observed.iter() {
@@ -1518,29 +1514,38 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
 
         loop {
-            println!("Partmap {:?}", partmap);
+            // println!("Partmap {:?}", partmap);
             let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
             // Create z mapping: state -> (head, tuple of partitions for args)
-            let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self.observations.iter()
+            let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self
+                .observations
+                .iter()
                 .map(|(state, transition)| {
                     let enode = self.id_to_node(self.find(*transition));
                     // println!("{} -> {:?}", transition, enode);
-                    let partition_tuple: Vec<Vec<Id>> = enode.children().iter()
+                    let partition_tuple: Vec<Vec<Id>> = enode
+                        .children()
+                        .iter()
                         .map(|x| {
-                            partmap.get(x)
+                            partmap
+                                .get(x)
                                 .map(|partition| partition.clone())
                                 .unwrap_or_else(|| vec![x.clone()])
                         })
                         .collect();
-                    // TODO: derive an integer from the enode that defines its type 
-                    (state.clone(), (format!("{:?}",enode.discriminant()), partition_tuple))
+                    // TODO: derive an integer from the enode that defines its type
+                    (
+                        state.clone(),
+                        (format!("{:?}", enode.discriminant()), partition_tuple),
+                    )
                 })
                 .collect();
             // println!("Z-map {:?}", z);
-            
+
             // Group by z values
-            for (_, equivs) in observed.iter()
+            for (_, equivs) in observed
+                .iter()
                 .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
                 .group_by(|state| z[*state].clone())
                 .into_iter()
@@ -1550,7 +1555,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     newpartmap.insert(i.clone(), equivs.clone());
                 }
             }
-            
+
             // Check for convergence
             if newpartmap == partmap {
                 break;
