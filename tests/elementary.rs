@@ -4,6 +4,7 @@ use egg::*;
 type EGraph = egg::EGraph<ElementaryLanguage, ()>;
 type Runner = egg::Runner<ElementaryLanguage, ()>;
 type Rewrite = egg::Rewrite<ElementaryLanguage, ()>;
+type RecExpr = egg::RecExpr<ElementaryLanguage>;
 
 define_language! {
     enum ElementaryLanguage {
@@ -27,6 +28,8 @@ define_language! {
         "sin" = Sine([Id; 1]),
         "acos" = Arccos([Id; 1]),
         "asin" = Arcsine([Id; 1]),
+
+
         Symbol(Symbol),
     }
 }
@@ -54,7 +57,6 @@ fn make_unification_rules() -> Vec<Rewrite> {
         rw!("mul-div"; "(* ?a (/ ?b ?c))" => "(/ (* ?a ?b) ?c)"),
         rw!("mul-div-same"; "(/ (* ?a ?b) ?a))" => "?b"),
         rw!("neg-div"; "(/ (- ?a) ?b)" => "(- (/ ?a ?b))"),
-        rw!("neg-mul"; "(* (- ?a) ?b)" => "(- (* ?a ?b))"),
         rw!("assoc-mul"; "(* ?a (* ?b ?c))" => "(* (* ?a ?b) ?c)"),
     ]);
     rules
@@ -71,6 +73,7 @@ fn make_simplification_rules() -> Vec<Rewrite> {
         rw!("add-same"; "(+ ?a ?a)" => "(* 2 ?a)"),
         rw!("sub-zero"; "(- ?a 0)" => "?a"),
         rw!("zero-sub"; "(- 0 ?a)" => "(- ?a)"),
+        rw!("neg-mul"; "(* (- ?a) ?b)" => "(- (* ?a ?b))"),
         // Elementary Inverses
         rw!("sin-asin"; "(sin (asin ?a))" => "?a"),
         rw!("cos-acos"; "(cos (acos ?a))" => "?a"),
@@ -94,6 +97,7 @@ fn make_derivative_rules() -> Vec<Rewrite> {
         rw!("mul-derive"; "(D ?a (* ?b ?c))" => "(+ (* (D ?a ?b) ?c) (* ?b (D ?a ?c)))"),
         rw!("add-derive"; "(D ?a (+ ?b ?c))" => "(+ (D ?a ?b) (D ?a ?c))"),
         rw!("sub-derive"; "(D ?a (- ?b ?c))" => "(- (D ?a ?b) (D ?a ?c))"),
+        rw!("neg-derive"; "(D ?a (- ?b))" => "(- (D ?a ?b))"),
     ];
 
     let elem_funcs = vec!["exp", "cos", "sin", "sqrt", "acos", "asin"];
@@ -109,46 +113,88 @@ fn make_derivative_rules() -> Vec<Rewrite> {
     rules
 }
 
-fn compute_derivative(expr: RecExpr<ElementaryLanguage>) -> RecExpr<ElementaryLanguage> {
-    let mut runner: Runner = Runner::default().with_expr(&expr);
+fn compute_derivative(var: String, expr: &RecExpr) -> RecExpr {
+    let d_expr = format!("(D {} {})", var, expr).parse().unwrap();
+    let mut runner: Runner = Runner::default().with_expr(&d_expr);
     runner = runner.run(&make_derivative_rules());
     let extractor = Extractor::new(&runner.egraph, SillyCostFn);
     extractor.find_best(runner.roots[0]).1
 }
 
-fn simplify(expr: RecExpr<ElementaryLanguage>) -> RecExpr<ElementaryLanguage> {
-    let mut runner: Runner = Runner::default().with_expr(&expr);
+fn simplify(expr: &RecExpr) -> RecExpr {
+    let mut runner: Runner = Runner::default().with_expr(expr);
     runner = runner.run(&make_simplification_rules());
     let extractor = Extractor::new(&runner.egraph, AstSize);
     extractor.find_best(runner.roots[0]).1
 }
 
+fn equal_under_assumption(
+    lhs: &RecExpr,
+    rhs: &RecExpr,
+    assumption: Option<(&RecExpr, &RecExpr)>,
+) -> bool {
+    let mut runner: Runner = Runner::default();
+    let lhs_id = runner.egraph.add_expr(&lhs);
+    let rhs_id = runner.egraph.add_expr(&rhs);
+    if let Some((lhs_assume, rhs_assume)) = assumption {
+        let lhs_assume_id = runner.egraph.add_expr(&lhs_assume);
+        let rhs_assume_id = runner.egraph.add_expr(&rhs_assume);
+        runner.egraph.union(lhs_assume_id, rhs_assume_id);
+    }
+    runner = runner.run(&make_unification_rules());
+    return runner.egraph.find(lhs_id) == runner.egraph.find(rhs_id);
+}
+
+fn check_equality(lhs_in: &RecExpr, rhs_in: &RecExpr, unroll_limit: usize) -> bool {
+    let lhs = simplify(lhs_in);
+    let rhs = simplify(rhs_in);
+
+    if equal_under_assumption(&lhs, &rhs, None) {
+        return true;
+    }
+    let mut d_lhs = lhs.clone();
+    let mut d_rhs = rhs.clone();
+    for i in 0..unroll_limit {
+        // TODO: incorporate the variable name into check_equality
+        d_lhs = simplify(&compute_derivative("x".to_string(), &d_lhs));
+        d_rhs = simplify(&compute_derivative("x".to_string(), &d_rhs));
+
+        // TODO: add a check for equality of application at zero
+        if equal_under_assumption(&d_lhs, &d_rhs, Some((&lhs, &rhs))) {
+            println!("Equal after {} derivatives", i + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
 #[test]
 fn cos_asin() {
     // Basic example of derivative
-    let sqrt_one_minus_xsquared = "(D x (sqrt (- 1 (* x x))))".parse().unwrap();
-    let sqrt_derivative = simplify(compute_derivative(sqrt_one_minus_xsquared));
+    let sqrt_one_minus_xsquared = "(sqrt (- 1 (* x x)))".parse().unwrap();
+    let sqrt_derivative = simplify(&compute_derivative(
+        "x".to_string(),
+        &sqrt_one_minus_xsquared,
+    ));
     println!("D sqrt(1-x^2) {}", sqrt_derivative);
-    let cos_asin = "(D x (cos (asin x)))".parse().unwrap();
-    let cos_asin_derivative = simplify(compute_derivative(cos_asin));
+    let cos_asin = "(cos (asin x))".parse().unwrap();
+    let cos_asin_derivative = simplify(&compute_derivative("x".to_string(), &cos_asin));
     println!("D cos(asin(x)) {}", cos_asin_derivative);
 
-    let mut runner = Runner::default();
-    let lhs_id = runner.egraph.add_expr(&cos_asin_derivative);
-    let rhs_id = runner.egraph.add_expr(&sqrt_derivative);
-    runner = runner.run(&make_unification_rules());
-
-    assert_eq!(runner.egraph.find(lhs_id), runner.egraph.find(rhs_id));
+    assert!(check_equality(&sqrt_one_minus_xsquared, &cos_asin, 1));
 }
 
 #[test]
 fn sin_acos() {
     // Basic example of derivative
-    let sqrt_one_minus_xsquared = "(D x (sqrt (- 1 (* x x))))".parse().unwrap();
-    let sqrt_derivative = simplify(compute_derivative(sqrt_one_minus_xsquared));
+    let sqrt_one_minus_xsquared = "(sqrt (- 1 (* x x)))".parse().unwrap();
+    let sqrt_derivative = simplify(&compute_derivative(
+        "x".to_string(),
+        &sqrt_one_minus_xsquared,
+    ));
     println!("D sqrt(1-x^2) {}", sqrt_derivative);
-    let sin_acos = "(D x (sin(acos x))))".parse().unwrap();
-    let sin_acos_derivative = simplify(compute_derivative(sin_acos));
+    let sin_acos = "(sin(acos x)))".parse().unwrap();
+    let sin_acos_derivative = simplify(&compute_derivative("x".to_string(), &sin_acos));
     println!("D sin(acos(x)) {}", sin_acos_derivative);
 
     let mut runner = Runner::default();
@@ -157,4 +203,41 @@ fn sin_acos() {
     runner = runner.run(&make_unification_rules());
 
     assert_eq!(runner.egraph.find(lhs_id), runner.egraph.find(rhs_id));
+}
+
+#[test]
+fn sin2x() {
+    // Basic example of derivative
+    let sin_2x = "(sin (* 2 x))".parse().unwrap();
+    let d_sin_2x = simplify(&compute_derivative("x".to_string(), &sin_2x));
+    let d_d_sin_2x = simplify(&compute_derivative("x".to_string(), &d_sin_2x));
+    println!("D sin(2x) {}", d_sin_2x);
+    println!("D D sin(2x) {}", d_d_sin_2x);
+
+    let sin_cos = "(* 2 (* (sin x) (cos x)))".parse().unwrap();
+    let d_sin_cos = simplify(&compute_derivative("x".to_string(), &sin_cos));
+    let d_d_sin_cos = simplify(&compute_derivative("x".to_string(), &d_sin_cos));
+    println!("D 2sin(x)cos(x)) {}", d_sin_cos);
+    println!("D D 2sin(x)cos(x)) {}", d_d_sin_cos);
+
+    assert!(equal_under_assumption(
+        &d_d_sin_2x,
+        &d_d_sin_cos,
+        Some((&sin_2x, &sin_cos))
+    ));
+    // If we observe this shortcut then the lhs and rhs will be unified but they are not recognised
+    // without this shortcut as we observe different node choices in the rebuilding step
+    let shortcut = "(* 2 (* 2 (- (* 2 (* (sin x) (cos x))))))";
+    let lhs_taylor = format!("(Cons 0 (Cons 2 {}))", d_d_sin_2x).parse().unwrap();
+    let rhs_taylor = format!("(Cons 0 (Cons 2 {}))", d_d_sin_cos)
+        .parse()
+        .unwrap();
+
+    // Add observations to the egraph
+    let mut runner = Runner::default();
+    let lhs: (Id, Id) = runner.egraph.add_observation(&sin_2x, &lhs_taylor);
+    let rhs = runner.egraph.add_observation(&sin_cos, &rhs_taylor);
+    runner = runner.run(&make_unification_rules());
+
+    // assert_eq!(runner.egraph.find(lhs.0), runner.egraph.find(rhs.0));
 }
