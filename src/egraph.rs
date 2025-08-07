@@ -1477,16 +1477,16 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         if self.observations.contains_key(&id) || to_observe.contains(&id) {
             return;
         }
+        for enode in self[id].nodes.iter() {
+            if enode.is_leaf() {
+                continue;
+            }
 
-        let enode = self.id_to_node(id);
-        if enode.is_leaf() {
-            return;
-        }
+            to_observe.insert(id);
 
-        to_observe.insert(id);
-
-        for child in enode.children() {
-            self.propagate_observations_to_child(*child, to_observe);
+            for child in enode.children() {
+                self.propagate_observations_to_child(*child, to_observe);
+            }
         }
     }
 
@@ -1522,8 +1522,12 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 .observations
                 .iter()
                 .map(|(state, transition)| {
-                    let enode = self.id_to_node(self.find(*transition));
-                    // println!("{} -> {:?}", transition, enode);
+                    // Sort nodes according to discriminant - to ensure we have a canonical form
+                    let mut nodes = self[self.find(*transition)].nodes.clone();
+                    nodes.sort_by_key(|n| format!("{:?}", n.discriminant()));
+                    let enode = nodes[0].clone();
+                    // let enode = self.id_to_node(self.find(*transition));
+                    println!("{} -> {:?}", transition, enode);
                     let partition_tuple: Vec<Vec<Id>> = enode
                         .children()
                         .iter()
@@ -1541,7 +1545,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     )
                 })
                 .collect();
-            // println!("Z-map {:?}", z);
+            println!("Z-map {:?}", z);
 
             // Group by z values
             for (_, equivs) in observed
