@@ -1,10 +1,12 @@
 use crate::*;
 use std::{
     borrow::BorrowMut,
+    cmp::Ordering,
     fmt::{self, Debug, Display},
     marker::PhantomData,
 };
 
+use hashbrown::HashSet;
 #[cfg(feature = "serde-1")]
 use serde::{Deserialize, Serialize};
 
@@ -1503,30 +1505,73 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // println!("Observations {:?}", self.observations);
     }
 
-    /// Automata Minimization
-    pub fn rebuild_observations(&mut self) {
-        self.propagate_observations();
-        let observed: Vec<Id> = self.observations.keys().cloned().collect();
-        // Initial unrefined partition - all observed entities in one group
-        let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
-        for i in observed.iter() {
-            partmap.insert(i.clone(), observed.clone());
+    /// A fast but conservative partition refinement that does not guarantee minimal partitions.
+    fn refine_partition_fast(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
+        // println!("Partmap {:?}", partmap);
+        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
+
+        // Create z mapping: state -> (head, tuple of partitions for args)
+        let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self
+            .observations
+            .iter()
+            .map(|(state, transition)| {
+                // Sort nodes according to discriminant - to ensure we have a canonical form
+                let mut nodes = self[self.find(*transition)].nodes.clone();
+                nodes.sort_by_key(|n| format!("{:?}", n.discriminant()));
+                let enode = nodes[0].clone();
+                // let enode = self.id_to_node(self.find(*transition));
+                println!("{} -> {:?}", transition, enode);
+                let partition_tuple: Vec<Vec<Id>> = enode
+                    .children()
+                    .iter()
+                    .map(|x| {
+                        partmap
+                            .get(x)
+                            .map(|partition| partition.clone())
+                            .unwrap_or_else(|| vec![x.clone()])
+                    })
+                    .collect();
+                // TODO: derive an integer from the enode that defines its type
+                (
+                    state.clone(),
+                    (format!("{:?}", enode.discriminant()), partition_tuple),
+                )
+            })
+            .collect();
+        println!("Z-map {:?}", z);
+
+        // Group by z values
+        for (_, equivs) in self
+            .observations
+            .keys()
+            .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
+            .group_by(|state| z[*state].clone())
+            .into_iter()
+        {
+            let equivs: Vec<Id> = equivs.cloned().collect();
+            for i in &equivs {
+                newpartmap.insert(i.clone(), equivs.clone());
+            }
         }
+        newpartmap
+    }
 
-        loop {
-            // println!("Partmap {:?}", partmap);
-            let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
+    // A complete partition refinement that guarantees minimal partitions.
+    fn refine_partition_minimal(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
+        // println!("Partmap {:?}", partmap);
+        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
-            // Create z mapping: state -> (head, tuple of partitions for args)
-            let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self
-                .observations
-                .iter()
-                .map(|(state, transition)| {
-                    // Sort nodes according to discriminant - to ensure we have a canonical form
-                    let mut nodes = self[self.find(*transition)].nodes.clone();
-                    nodes.sort_by_key(|n| format!("{:?}", n.discriminant()));
-                    let enode = nodes[0].clone();
-                    // let enode = self.id_to_node(self.find(*transition));
+        // Create z mapping: state -> (head, tuple of partitions for args)
+        let z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = self
+            .observations
+            .iter()
+            .map(|(state, transition)| {
+                // Sort nodes according to discriminant - to ensure we have a canonical form
+                let mut transitions = HashSet::default();
+                for enode in self[self.find(*transition)].nodes.iter() {
+                    if enode.is_leaf() {
+                        continue;
+                    }
                     println!("{} -> {:?}", transition, enode);
                     let partition_tuple: Vec<Vec<Id>> = enode
                         .children()
@@ -1538,27 +1583,49 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                                 .unwrap_or_else(|| vec![x.clone()])
                         })
                         .collect();
-                    // TODO: derive an integer from the enode that defines its type
-                    (
-                        state.clone(),
-                        (format!("{:?}", enode.discriminant()), partition_tuple),
-                    )
-                })
-                .collect();
-            println!("Z-map {:?}", z);
-
-            // Group by z values
-            for (_, equivs) in observed
-                .iter()
-                .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
-                .group_by(|state| z[*state].clone())
-                .into_iter()
-            {
-                let equivs: Vec<Id> = equivs.cloned().collect();
-                for i in &equivs {
-                    newpartmap.insert(i.clone(), equivs.clone());
+                    transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
                 }
+
+                // TODO: derive an integer from the enode that defines its type
+                (state.clone(), transitions.clone())
+            })
+            .collect();
+        println!("Z-map {:?}", z);
+
+        // Group by z values - using set disjoint test to distinguish
+        for a in self.observations.keys() {
+            if newpartmap.contains_key(a) {
+                continue; // already processed
             }
+            let mut equivs = vec![a.clone()];
+            for b in self.observations.keys() {
+                if z[a].is_disjoint(&z[b]) {
+                    continue;
+                }
+                println!("{:?} and {:?} are equivalent", z[a], z[b]);
+                equivs.push(b.clone());
+            }
+            for i in &equivs {
+                newpartmap.insert(i.clone(), equivs.clone());
+            }
+        }
+
+        newpartmap
+    }
+
+    /// Automata Minimization
+    pub fn rebuild_observations(&mut self) {
+        self.propagate_observations();
+        let observed: Vec<Id> = self.observations.keys().cloned().collect();
+        // Initial unrefined partition - all observed entities in one group
+        let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
+        for i in observed.iter() {
+            partmap.insert(i.clone(), observed.clone());
+        }
+
+        loop {
+            // let newpartmap = self.refine_partition_fast(&partmap);
+            let newpartmap = self.refine_partition_minimal(&partmap);
 
             // Check for convergence
             if newpartmap == partmap {
