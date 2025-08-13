@@ -1590,20 +1590,41 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 (state.clone(), transitions.clone())
             })
             .collect();
-        println!("Z-map {:?}", z);
+        // println!("Z-map {:?}", z);
 
         // Group by z values - using set disjoint test to distinguish
         for a in self.observations.keys() {
             if newpartmap.contains_key(a) {
                 continue; // already processed
             }
+
+            // TODO - improve performance of this code - lots of opportunities
             let mut equivs = vec![a.clone()];
-            for b in self.observations.keys() {
-                if z[a].is_disjoint(&z[b]) {
-                    continue;
+            let mut extend_equivs = true;
+            let mut check_from = 0;
+            while extend_equivs {
+                extend_equivs = false;
+                let equivs_checked = equivs.len();
+
+                for b in self.observations.keys() {
+                    // Skip elements in the parition
+                    if equivs.contains(b) || newpartmap.contains_key(b) {
+                        continue;
+                    }
+
+                    // Test for intersection with any element of equivs
+                    for c in equivs[check_from..].iter() {
+                        if !z[c].is_disjoint(&z[b]) {
+                            extend_equivs = true;
+                            break;
+                        }
+                    }
+                    if extend_equivs {
+                        equivs.push(b.clone());
+                    }
+
+                    check_from = equivs_checked - 1;
                 }
-                println!("{:?} and {:?} are equivalent", z[a], z[b]);
-                equivs.push(b.clone());
             }
             for i in &equivs {
                 newpartmap.insert(i.clone(), equivs.clone());

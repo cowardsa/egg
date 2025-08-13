@@ -260,16 +260,19 @@ fn smt_successor() {
 
 #[test]
 fn merged_observations() {
+    let start = std::time::Instant::now();
     let mut egraph = EGraph::default();
-    let x = egraph.add_observation(&"x".parse().unwrap(), &"(Cons 1 (f x))".parse().unwrap());
+    let x = egraph.add_observation(&"x".parse().unwrap(), &"(Cons z (f x))".parse().unwrap());
     let fx = egraph.add_expr(&"(f x)".parse().unwrap());
     let gx = egraph.add_expr(&"(g x)".parse().unwrap());
     egraph.union(fx, gx);
 
-    let y = egraph.add_observation(&"y".parse().unwrap(), &"(Cons 1 h)".parse().unwrap());
+    let y = egraph.add_observation(&"y".parse().unwrap(), &"(Cons z w)".parse().unwrap());
     let fy = egraph.add_expr(&"(f y)".parse().unwrap());
-    let h = egraph.add_expr(&"h".parse().unwrap());
+    let h = egraph.add_expr(&"w".parse().unwrap());
     egraph.union(fy, h);
     egraph.rebuild();
     egraph.dot().to_dot("merged_obs.dot");
+    assert_eq!(egraph.find(x.0), egraph.find(y.0));
+    println!("Test runtime: {:?}", start.elapsed());
 }
