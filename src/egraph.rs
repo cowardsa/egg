@@ -1505,6 +1505,37 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // println!("Observations {:?}", self.observations);
     }
 
+    fn find_cycles(&self, mut f: impl FnMut(Id, usize)) {
+        enum Color {
+            White,
+            Gray,
+            Black,
+        }
+        type Enter = bool;
+
+        let mut color: HashMap<Id, Color> = self.classes().map(|c| (c.id, Color::White)).collect();
+        let mut stack: Vec<(Enter, Id)> = self.classes().map(|c| (true, c.id)).collect();
+
+        while let Some((enter, id)) = stack.pop() {
+            if enter {
+                *color.get_mut(&id).unwrap() = Color::Gray;
+                stack.push((false, id));
+                for (i, node) in self[id].iter().enumerate() {
+                    for child in node.children() {
+                        let canon_child = self.find(*child);
+                        match &color[&canon_child] {
+                            Color::White => stack.push((true, canon_child)),
+                            Color::Gray => f(id, i),
+                            Color::Black => (),
+                        }
+                    }
+                }
+            } else {
+                *color.get_mut(&id).unwrap() = Color::Black;
+            }
+        }
+    }
+
     /// A fast but conservative partition refinement that does not guarantee minimal partitions.
     fn refine_partition_fast(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
         // println!("Partmap {:?}", partmap);
@@ -1557,45 +1588,93 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     // A complete partition refinement that guarantees minimal partitions.
     fn refine_partition_minimal(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
-        // println!("Partmap {:?}", partmap);
+        // Detect cycles in the e-graph
+        let mut cycles: HashSet<(Id, usize)> = Default::default();
+        self.find_cycles(|id, i| {
+            cycles.insert((id, i));
+        });
+
+        println!("Partmap {:?}", partmap);
         let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
         // Create z mapping: state -> (head, tuple of partitions for args)
-        let z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = self
-            .observations
-            .iter()
-            .map(|(state, transition)| {
-                // Sort nodes according to discriminant - to ensure we have a canonical form
-                let mut transitions = HashSet::default();
-                for enode in self[self.find(*transition)].nodes.iter() {
-                    if enode.is_leaf() {
-                        continue;
-                    }
-                    // println!("{} -> {:?}", transition, enode);
-                    let partition_tuple: Vec<Vec<Id>> = enode
-                        .children()
-                        .iter()
-                        .map(|x| {
-                            partmap
-                                .get(x)
-                                .map(|partition| partition.clone())
-                                .unwrap_or_else(|| vec![x.clone()])
-                        })
-                        .collect();
-                    transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
+        let mut z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = HashMap::default();
+
+        // Construct transitions for each e-class, if f(e1) in e2 => e2 --f--> e1
+        for class in self.classes() {
+            let mut transitions = HashSet::default();
+            for enode in class.nodes.iter() {
+                if enode.is_leaf() {
+                    continue;
                 }
 
-                // TODO: derive an integer from the enode that defines its type
-                (state.clone(), transitions.clone())
-            })
-            .collect();
-        // for (state, set) in z.iter() {
-        //     println!("Z[{state}]->{:?}", set);
-        // }
+                if enode.children().contains(&class.id) {
+                    // Skip self-referential transitions
+                    continue;
+                }
+                // println!("{} -> {:?}", transition, enode);
+                let partition_tuple: Vec<Vec<Id>> = enode
+                    .children()
+                    .iter()
+                    .map(|x| {
+                        partmap
+                            .get(x)
+                            .map(|partition| partition.clone())
+                            .unwrap_or_else(|| vec![x.clone()])
+                    })
+                    .collect();
+                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
+            }
+
+            // TODO: derive an integer from the enode that defines its type
+            z.insert(class.id, transitions.clone());
+        }
+
+        // Now add all the definitional transitions - which we just unfold as
+        // above but peeling off the first level of transition
+        // x := f(y) => x --f--> y
+        for (state, transition) in self.observations.iter() {
+            let canon_transition = self.find(*transition);
+            let part = partmap
+                .get(&canon_transition)
+                .map(|partition| partition.clone())
+                .unwrap_or_else(|| vec![canon_transition.clone()]);
+            let mut transitions = HashSet::default();
+
+            let state_id = self.find(*state);
+            if z.get(&state_id).is_some() {
+                transitions = z.get(&state_id).unwrap().clone();
+            }
+
+            for enode in self[canon_transition].nodes.iter() {
+                if enode.is_leaf() {
+                    continue;
+                }
+                // println!("{} -> {:?}", transition, enode);
+                let partition_tuple: Vec<Vec<Id>> = enode
+                    .children()
+                    .iter()
+                    .map(|x| {
+                        partmap
+                            .get(x)
+                            .map(|partition| partition.clone())
+                            .unwrap_or_else(|| vec![x.clone()])
+                    })
+                    .collect();
+                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
+            }
+
+            z.insert(state_id.clone(), transitions.clone());
+        }
+
+        for (state, set) in z.iter() {
+            println!("Z[{state}]->{:?}", set);
+        }
 
         // Group by z values - using set disjoint test to distinguish
-        for a in self.observations.keys() {
-            if newpartmap.contains_key(a) {
+        for class_a in self.classes() {
+            let a = class_a.id;
+            if newpartmap.contains_key(&a) {
                 continue; // already processed
             }
 
@@ -1606,16 +1685,17 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             while extend_equivs {
                 let equivs_checked = equivs.len();
 
-                for b in self.observations.keys() {
+                for class_b in self.classes() {
+                    let b = class_b.id;
                     extend_equivs = false;
                     // Skip elements in the parition
-                    if equivs.contains(b) || newpartmap.contains_key(b) {
+                    if equivs.contains(&b) || newpartmap.contains_key(&b) {
                         continue;
                     }
 
                     // Test for intersection with any element of equivs
                     for c in equivs[check_from..].iter() {
-                        if !z[c].is_disjoint(&z[b]) {
+                        if !z[c].is_disjoint(&z[&b]) {
                             extend_equivs = true;
                             break;
                         }
@@ -1637,11 +1717,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// Automata Minimization
     pub fn rebuild_observations(&mut self) {
-        // for class in self.classes() {
-        //     println!("{}->{:?}", class.id, class.nodes);
-        // }
-        self.propagate_observations();
-        let observed: Vec<Id> = self.observations.keys().cloned().collect();
+        for class in self.classes() {
+            println!("{}->{:?}", class.id, class.nodes);
+        }
+        // self.propagate_observations();
+        let observed: Vec<Id> = self.classes().map(|c| c.id).collect();
         // Initial unrefined partition - all observed entities in one group
         let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
         for i in observed.iter() {
