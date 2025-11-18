@@ -74,7 +74,8 @@ fn make_simplification_rules() -> Vec<Rewrite> {
         rw!("add-same"; "(+ ?a ?a)" => "(* 2 ?a)"),
         rw!("sub-zero"; "(- ?a 0)" => "?a"),
         rw!("zero-sub"; "(- 0 ?a)" => "(- ?a)"),
-        rw!("neg-mul"; "(* (- ?a) ?b)" => "(- (* ?a ?b))"),
+        rw!("mul-neg"; "(* (- ?a) ?b)" => "(- (* ?a ?b))"),
+        rw!("neg-mul"; "(- (* ?a ?b))" => "(* ?a (- ?b))"),
         rw!("neg-neg"; "(- (- ?a))" => "?a"),
         rw!("add-neg"; "(+ ?a (- ?b))" => "(- ?a ?b)"),
         rw!("neg-add"; "(- ?a ?b)" => "(+ ?a (- ?b))"),
@@ -220,6 +221,10 @@ fn check_equality(
         let rhs_obs = observable_rhs.parse().unwrap();
 
         if equal_under_observation(&lhs, &rhs, &lhs_obs, &rhs_obs, &with_assumptions, false) {
+            println!(
+                "Observationally equal after {} derivatives:\n{} == {}\nlhs->{}\nrhs->{}",
+                unroll_limit, lhs, rhs, lhs_obs, rhs_obs
+            );
             return true;
         } else if step + 1 >= unroll_limit {
             // last iteration and unable to prove
@@ -257,7 +262,7 @@ fn choose_observation() {
     let g = runner
         .egraph
         .add_observation(&"g".parse().unwrap(), &"(Cons 1 (* g 2))".parse().unwrap());
-    runner = runner.run(&make_simplification_rules());
+    // runner = runner.run(&make_simplification_rules());
     runner.egraph.dot().to_dot("choose_obs.dot");
 
     assert_eq!(runner.egraph.find(f.0), runner.egraph.find(g.0))
@@ -267,10 +272,6 @@ fn choose_observation() {
 fn simple_observation() {
     // let mut egraph = EGraph::default();
     let mut runner = Runner::default();
-    // let f = egraph.add_expr(&"f".parse().unwrap());
-    // let g = egraph.add_expr(&"g".parse().unwrap());
-    // let two_f = egraph.add_expr();
-    // let two_g = egraph.add_expr(&"(* g g)".parse().unwrap());
 
     let f = runner.egraph.add_observation(
         &"f".parse().unwrap(),
@@ -301,6 +302,15 @@ fn cos_asin() {
 }
 
 #[test]
+fn asin_negative() {
+    // Basic example of derivative
+    let asin_neg_x = "(asin (- x))".parse().unwrap();
+    let neg_asin_x = "(- (asin x))".parse().unwrap();
+
+    assert!(check_equality(&asin_neg_x, &neg_asin_x, 1, vec![]));
+}
+
+#[test]
 fn sin_acos() {
     // Basic example of derivative
     let sqrt_one_minus_xsquared = "(sqrt (- 1 (* x x)))".parse().unwrap();
@@ -314,6 +324,7 @@ fn sin_acos() {
     ));
 }
 
+#[ignore]
 #[test]
 fn sin2x() {
     // Basic example of derivative

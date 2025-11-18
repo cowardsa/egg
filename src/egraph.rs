@@ -1538,7 +1538,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 )
             })
             .collect();
-        println!("Z-map {:?}", z);
 
         // Group by z values
         for (_, equivs) in self
@@ -1572,7 +1571,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     if enode.is_leaf() {
                         continue;
                     }
-                    println!("{} -> {:?}", transition, enode);
+                    // println!("{} -> {:?}", transition, enode);
                     let partition_tuple: Vec<Vec<Id>> = enode
                         .children()
                         .iter()
@@ -1590,7 +1589,9 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 (state.clone(), transitions.clone())
             })
             .collect();
-        // println!("Z-map {:?}", z);
+        // for (state, set) in z.iter() {
+        //     println!("Z[{state}]->{:?}", set);
+        // }
 
         // Group by z values - using set disjoint test to distinguish
         for a in self.observations.keys() {
@@ -1603,10 +1604,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             let mut extend_equivs = true;
             let mut check_from = 0;
             while extend_equivs {
-                extend_equivs = false;
                 let equivs_checked = equivs.len();
 
                 for b in self.observations.keys() {
+                    extend_equivs = false;
                     // Skip elements in the parition
                     if equivs.contains(b) || newpartmap.contains_key(b) {
                         continue;
@@ -1636,6 +1637,9 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// Automata Minimization
     pub fn rebuild_observations(&mut self) {
+        // for class in self.classes() {
+        //     println!("{}->{:?}", class.id, class.nodes);
+        // }
         self.propagate_observations();
         let observed: Vec<Id> = self.observations.keys().cloned().collect();
         // Initial unrefined partition - all observed entities in one group
@@ -1657,7 +1661,13 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         for part in partmap.values() {
             for j in part.iter() {
-                self.union(*j, part[0]);
+                self.union_instantiations(
+                    &self.id_to_pattern(*j, &Default::default()).0.ast,
+                    &self.id_to_pattern(part[0], &Default::default()).0.ast,
+                    &Default::default(),
+                    "Automata Minimization",
+                );
+                // self.union(*j, part[0]);
             }
         }
     }

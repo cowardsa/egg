@@ -114,6 +114,7 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
 fn make_rules() -> Vec<Rewrite> {
     vec![
         rw!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+        rw!("add-zero"; "(+ ?a 0)" => "?a"),
         rw!("propagate-map"; "(Map ?func (Cons ?a ?b))" => "(Cons (App ?func ?a) (Map ?func ?b))"),
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
     ]
@@ -275,4 +276,20 @@ fn merged_observations() {
     egraph.dot().to_dot("merged_obs.dot");
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
     println!("Test runtime: {:?}", start.elapsed());
+}
+
+#[test]
+fn idempotent_function() {
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let a = runner
+        .egraph
+        .add_observation(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
+    let b = runner
+        .egraph
+        .add_observation(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
+
+    runner = runner.run(&make_rules());
+    runner.egraph.dot().to_dot("map.dot");
+
+    assert_eq!(runner.egraph.find(a.0), runner.egraph.find(b.0));
 }
