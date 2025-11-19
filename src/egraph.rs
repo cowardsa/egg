@@ -1587,14 +1587,20 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     // A complete partition refinement that guarantees minimal partitions.
-    fn refine_partition_minimal(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
+    fn refine_partition_minimal(
+        &mut self,
+        partmap: &HashMap<Id, Vec<Id>>,
+        debug: bool,
+    ) -> HashMap<Id, Vec<Id>> {
         // Detect cycles in the e-graph
         let mut cycles: HashSet<(Id, usize)> = Default::default();
         self.find_cycles(|id, i| {
             cycles.insert((id, i));
         });
 
-        println!("Partmap {:?}", partmap);
+        if debug {
+            println!("Partmap {:?}", partmap);
+        }
         let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
         // Create z mapping: state -> (head, tuple of partitions for args)
@@ -1603,13 +1609,13 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // Construct transitions for each e-class, if f(e1) in e2 => e2 --f--> e1
         for class in self.classes() {
             let mut transitions = HashSet::default();
-            for enode in class.nodes.iter() {
+            for (ind, enode) in class.nodes.iter().enumerate() {
                 if enode.is_leaf() {
                     continue;
                 }
 
-                if enode.children().contains(&class.id) {
-                    // Skip self-referential transitions
+                if cycles.contains(&(class.id, ind)) {
+                    // Skip cyclic transitions
                     continue;
                 }
                 // println!("{} -> {:?}", transition, enode);
@@ -1667,8 +1673,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             z.insert(state_id.clone(), transitions.clone());
         }
 
-        for (state, set) in z.iter() {
-            println!("Z[{state}]->{:?}", set);
+        if debug {
+            for (state, set) in z.iter() {
+                println!("Z[{state}]->{:?}", set);
+            }
         }
 
         // Group by z values - using set disjoint test to distinguish
@@ -1717,8 +1725,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// Automata Minimization
     pub fn rebuild_observations(&mut self) {
-        for class in self.classes() {
-            println!("{}->{:?}", class.id, class.nodes);
+        let debug = false;
+        if debug {
+            for class in self.classes() {
+                println!("{}->{:?}", class.id, class.nodes);
+            }
         }
         // self.propagate_observations();
         let observed: Vec<Id> = self.classes().map(|c| c.id).collect();
@@ -1730,7 +1741,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         loop {
             // let newpartmap = self.refine_partition_fast(&partmap);
-            let newpartmap = self.refine_partition_minimal(&partmap);
+            let newpartmap = self.refine_partition_minimal(&partmap, debug);
 
             // Check for convergence
             if newpartmap == partmap {
@@ -1739,14 +1750,49 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             partmap = newpartmap;
         }
 
+        // Perform further refinement to avoid unioning x := def(x) cases...
+
         for part in partmap.values() {
+            let mut base_obs = None;
+            let mut base_rw = None;
             for j in part.iter() {
-                self.union_instantiations(
-                    &self.id_to_pattern(*j, &Default::default()).0.ast,
-                    &self.id_to_pattern(part[0], &Default::default()).0.ast,
-                    &Default::default(),
-                    "Automata Minimization",
-                );
+                // Only union observations with observations, and rewrites with rewrites
+                // TODO - figure out why this is broken???
+                if self.observations.contains_key(j) {
+                    if base_obs.is_none() {
+                        base_obs = Some(j);
+                    } else {
+                        if debug {
+                            println!("Union Observations {} and {}", j, base_obs.unwrap());
+                        }
+                        self.union_instantiations(
+                            &self.id_to_pattern(*j, &Default::default()).0.ast,
+                            &self
+                                .id_to_pattern(*base_obs.unwrap(), &Default::default())
+                                .0
+                                .ast,
+                            &Default::default(),
+                            "Automata Minimization",
+                        );
+                    }
+                } else {
+                    if base_rw.is_none() {
+                        base_rw = Some(j);
+                    } else {
+                        if debug {
+                            println!("Union Rewrites {} and {}", j, base_rw.unwrap());
+                        }
+                        self.union_instantiations(
+                            &self.id_to_pattern(*j, &Default::default()).0.ast,
+                            &self
+                                .id_to_pattern(*base_rw.unwrap(), &Default::default())
+                                .0
+                                .ast,
+                            &Default::default(),
+                            "Automata Minimization",
+                        );
+                    }
+                }
                 // self.union(*j, part[0]);
             }
         }

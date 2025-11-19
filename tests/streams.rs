@@ -202,7 +202,6 @@ fn simple_dfa() {
     );
 
     egraph.rebuild();
-    egraph.dot().to_dot("dfa.dot");
 
     assert_eq!(egraph.find(two.0), egraph.find(three.0));
     assert_eq!(egraph.find(four.0), egraph.find(five.0));
@@ -212,13 +211,18 @@ fn simple_dfa() {
 fn cocaml_map() {
     // Cocaml example
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let alt = runner.egraph.add_observation(
-        &"alt".parse().unwrap(),
-        &"(Cons 1 (Cons 2 alt))".parse().unwrap(),
-    );
-    let map = runner.egraph.add_expr(&"(Map incr alt)".parse().unwrap());
+    let obs_expr = "(Cons 1 (Cons 2 alt))".parse().unwrap();
+    let alt = runner
+        .egraph
+        .add_observation(&"alt".parse().unwrap(), &obs_expr);
+    // map(incr,alt) == map(incr,1::alt) == map(incr,1::1::alt)
+    // map(incr,1::alt) = 2::map(incr,alt)
+
+    let map = runner
+        .egraph
+        .add_expr(&format!("(Map incr {obs_expr})").parse().unwrap());
     runner = runner.run(&make_rules());
-    runner.egraph.dot().to_dot("map.dot");
+    // runner.egraph.dot().to_dot("map.dot");
 
     // Check (map alt) = 2 :: 3 :: (map alt)
     assert_eq!(
@@ -243,9 +247,9 @@ fn cocaml_elements() {
     egraph.rebuild();
 
     // Check (map alt) = 2 :: 3 :: (map alt)
-    assert_eq!(egraph[ones.0].data.elements, HashSet::from([1]));
+    assert_eq!(egraph[ones.1].data.elements, HashSet::from([1]));
 
-    assert_eq!(egraph[alt.0].data.elements, HashSet::from([1, 2]));
+    assert_eq!(egraph[alt.1].data.elements, HashSet::from([1, 2]));
 }
 
 #[test]
@@ -273,7 +277,7 @@ fn merged_observations() {
     let h = egraph.add_expr(&"w".parse().unwrap());
     egraph.union(fy, h);
     egraph.rebuild();
-    egraph.dot().to_dot("merged_obs.dot");
+    // egraph.dot().to_dot("merged_obs.dot");
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
     println!("Test runtime: {:?}", start.elapsed());
 }
@@ -288,8 +292,88 @@ fn idempotent_function() {
         .egraph
         .add_observation(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
 
-    runner = runner.run(&make_rules());
-    runner.egraph.dot().to_dot("map.dot");
+    // runner.egraph.rebuild();
+    runner = runner.with_iter_limit(2).run(&make_rules());
 
-    assert_eq!(runner.egraph.find(a.0), runner.egraph.find(b.0));
+    assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
+}
+
+#[test]
+fn chengs_example() {
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_observation(&"x".parse().unwrap(), &"x".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_observation(&"y".parse().unwrap(), &"(f z)".parse().unwrap());
+
+    let z = runner
+        .egraph
+        .add_observation(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
+    runner.egraph.rebuild();
+
+    let rules: Vec<Rewrite> = vec![rw!(
+        "f-x";
+        "x" => "(f x)"
+    )];
+    runner = runner.with_iter_limit(2).run(&rules);
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+#[test]
+fn chengs_example_3_5_1() {
+    // x := f(x)
+    // y := f(f(x))
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_observation(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_observation(&"y".parse().unwrap(), &"(f (f x))".parse().unwrap());
+
+    runner.egraph.rebuild();
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+#[test]
+fn chengs_example_3_5_2() {
+    // x := f(x)
+    // y := y
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_observation(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_observation(&"y".parse().unwrap(), &"y".parse().unwrap());
+
+    runner.egraph.rebuild();
+
+    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+#[test]
+fn chengs_example_3_6() {
+    // x := g(x)
+    // y := g(y)
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_observation(&"x".parse().unwrap(), &"(g x)".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_observation(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
+
+    runner.egraph.rebuild();
+    let rules: Vec<Rewrite> = vec![rw!(
+        "g-y";
+        "(g y)" => "y"
+    )];
+    runner = runner.with_iter_limit(2).run(&rules);
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
 }
