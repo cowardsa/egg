@@ -15,6 +15,7 @@ define_language! {
         "+" = Add([Id; 2]),
         "f" = F([Id; 1]),
         "g" = G([Id; 1]),
+        "h" = H([Id; 1]),
         "Map" = Map([Id; 2]),
         "App" = App([Id; 2]),
         Symbol(Symbol),
@@ -126,10 +127,10 @@ fn simple_ones() {
     let mut egraph = EGraph::default();
     let a = "a".parse().unwrap();
     let astream = "(Cons 1 a)".parse().unwrap();
-    let ids_a = egraph.add_observation(&a, &astream);
+    let ids_a = egraph.add_definition(&a, &astream);
     let b = "b".parse().unwrap();
     let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
-    let ids_b = egraph.add_observation(&b, &bstream);
+    let ids_b = egraph.add_definition(&b, &bstream);
     egraph.rebuild();
     assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
@@ -142,11 +143,11 @@ fn commutative() {
     // let-rec ab = cons( (a + b) ab)
     let ab = "ab".parse().unwrap();
     let abstream = "(Cons (+ a b) ab)".parse().unwrap();
-    let ids_ab = runner.egraph.add_observation(&ab, &abstream);
+    let ids_ab = runner.egraph.add_definition(&ab, &abstream);
     // let-rec ba = cons( (b + a) ba)
     let ba = "ba".parse().unwrap();
     let bastream = "(Cons (+ b a) ba)".parse().unwrap();
-    let ids_ba = runner.egraph.add_observation(&ba, &bastream);
+    let ids_ba = runner.egraph.add_definition(&ba, &bastream);
 
     println!("E-Graph Size {}", runner.egraph.number_of_classes());
     runner = runner.run(&make_rules());
@@ -160,11 +161,11 @@ fn simple_trees() {
     // From Wojtek's Slack Example
     let mut egraph = EGraph::default();
 
-    let ids_a = egraph.add_observation(
+    let ids_a = egraph.add_definition(
         &"tree1".parse().unwrap(),
         &"(Node 1 tree1 tree1)".parse().unwrap(),
     );
-    let ids_b = egraph.add_observation(
+    let ids_b = egraph.add_definition(
         &"tree2".parse().unwrap(),
         &"(Node 1 (Node 1 tree2 tree2) (Node 1 tree2 tree2))"
             .parse()
@@ -180,23 +181,23 @@ fn simple_dfa() {
     // From Phil Zucker's Blog: https://www.philipzucker.com/naive_automata/
     let mut egraph = EGraph::default();
 
-    egraph.add_observation(
+    egraph.add_definition(
         &"one".parse().unwrap(),
         &"(Node False two three)".parse().unwrap(),
     );
-    let two = egraph.add_observation(
+    let two = egraph.add_definition(
         &"two".parse().unwrap(),
         &"(Node False four three)".parse().unwrap(),
     );
-    let three = egraph.add_observation(
+    let three = egraph.add_definition(
         &"three".parse().unwrap(),
         &"(Node False five three)".parse().unwrap(),
     );
-    let four = egraph.add_observation(
+    let four = egraph.add_definition(
         &"four".parse().unwrap(),
         &"(Node True five four)".parse().unwrap(),
     );
-    let five = egraph.add_observation(
+    let five = egraph.add_definition(
         &"five".parse().unwrap(),
         &"(Node True four four)".parse().unwrap(),
     );
@@ -214,7 +215,7 @@ fn cocaml_map() {
     let obs_expr = "(Cons 1 (Cons 2 alt))".parse().unwrap();
     let alt = runner
         .egraph
-        .add_observation(&"alt".parse().unwrap(), &obs_expr);
+        .add_definition(&"alt".parse().unwrap(), &obs_expr);
     // map(incr,alt) == map(incr,1::alt) == map(incr,1::1::alt)
     // map(incr,1::alt) = 2::map(incr,alt)
 
@@ -239,11 +240,11 @@ fn cocaml_map() {
 fn cocaml_elements() {
     // Cocaml example of analysis
     let mut egraph = EGraph::default();
-    let alt = egraph.add_observation(
+    let alt = egraph.add_definition(
         &"alt".parse().unwrap(),
         &"(Cons 1 (Cons 2 alt))".parse().unwrap(),
     );
-    let ones = egraph.add_observation(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());
+    let ones = egraph.add_definition(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());
     egraph.rebuild();
 
     // Check (map alt) = 2 :: 3 :: (map alt)
@@ -257,8 +258,8 @@ fn smt_successor() {
     // Example taken from SMT paper Example 2 Section 3:
     // https://homepage.divms.uiowa.edu/~ajreynol/cade15.pdf
     let mut egraph = EGraph::default();
-    let a = egraph.add_observation(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
-    let b = egraph.add_observation(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
+    let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
+    let b = egraph.add_definition(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
     egraph.rebuild();
     assert_eq!(egraph.find(a.0), egraph.find(b.0));
 }
@@ -267,12 +268,12 @@ fn smt_successor() {
 fn merged_observations() {
     let start = std::time::Instant::now();
     let mut egraph = EGraph::default();
-    let x = egraph.add_observation(&"x".parse().unwrap(), &"(Cons z (f x))".parse().unwrap());
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons z (f x))".parse().unwrap());
     let fx = egraph.add_expr(&"(f x)".parse().unwrap());
     let gx = egraph.add_expr(&"(g x)".parse().unwrap());
     egraph.union(fx, gx);
 
-    let y = egraph.add_observation(&"y".parse().unwrap(), &"(Cons z w)".parse().unwrap());
+    let y = egraph.add_definition(&"y".parse().unwrap(), &"(Cons z w)".parse().unwrap());
     let fy = egraph.add_expr(&"(f y)".parse().unwrap());
     let h = egraph.add_expr(&"w".parse().unwrap());
     egraph.union(fy, h);
@@ -287,10 +288,10 @@ fn idempotent_function() {
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let a = runner
         .egraph
-        .add_observation(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
+        .add_definition(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
     let b = runner
         .egraph
-        .add_observation(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
+        .add_definition(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
 
     // runner.egraph.rebuild();
     runner = runner.with_iter_limit(2).run(&make_rules());
@@ -299,18 +300,34 @@ fn idempotent_function() {
 }
 
 #[test]
+fn rebuilding() {
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let ab = runner.egraph.add_expr(&"(+ a b)".parse().unwrap());
+    let ba = runner.egraph.add_expr(&"(+ b a)".parse().unwrap());
+    let a = runner.egraph.add_expr(&"(f (+ a b))".parse().unwrap());
+    let b = runner.egraph.add_expr(&"(f (+ b a))".parse().unwrap());
+    // runner.egraph.union(ab, ba);
+    assert_ne!(runner.egraph.find(a), runner.egraph.find(b));
+    // runner.egraph.rebuild();
+    runner = runner.with_iter_limit(2).run(&make_rules());
+    println!("E-Graph {:?}", runner.egraph);
+
+    assert_eq!(runner.egraph.find(a), runner.egraph.find(b));
+}
+
+#[test]
 fn chengs_example() {
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let x = runner
         .egraph
-        .add_observation(&"x".parse().unwrap(), &"x".parse().unwrap());
+        .add_definition(&"x".parse().unwrap(), &"x".parse().unwrap());
     let y = runner
         .egraph
-        .add_observation(&"y".parse().unwrap(), &"(f z)".parse().unwrap());
+        .add_definition(&"y".parse().unwrap(), &"(f z)".parse().unwrap());
 
     let z = runner
         .egraph
-        .add_observation(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
+        .add_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
     runner.egraph.rebuild();
 
     let rules: Vec<Rewrite> = vec![rw!(
@@ -329,10 +346,10 @@ fn chengs_example_3_5_1() {
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let x = runner
         .egraph
-        .add_observation(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
+        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
     let y = runner
         .egraph
-        .add_observation(&"y".parse().unwrap(), &"(f (f x))".parse().unwrap());
+        .add_definition(&"y".parse().unwrap(), &"(f (f x))".parse().unwrap());
 
     runner.egraph.rebuild();
 
@@ -346,10 +363,10 @@ fn chengs_example_3_5_2() {
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let x = runner
         .egraph
-        .add_observation(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
+        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
     let y = runner
         .egraph
-        .add_observation(&"y".parse().unwrap(), &"y".parse().unwrap());
+        .add_definition(&"y".parse().unwrap(), &"y".parse().unwrap());
 
     runner.egraph.rebuild();
 
@@ -357,23 +374,82 @@ fn chengs_example_3_5_2() {
 }
 
 #[test]
+#[should_panic]
 fn chengs_example_3_6() {
     // x := g(x)
     // y := g(y)
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let x = runner
         .egraph
-        .add_observation(&"x".parse().unwrap(), &"(g x)".parse().unwrap());
+        .add_definition(&"x".parse().unwrap(), &"(g x)".parse().unwrap());
     let y = runner
         .egraph
-        .add_observation(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
+        .add_definition(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
 
     runner.egraph.rebuild();
     let rules: Vec<Rewrite> = vec![rw!(
         "g-y";
         "(g y)" => "y"
     )];
+    runner = runner.with_iter_limit(1).run(&rules);
+    runner.egraph.rebuild(); // Expected to fail
+}
+
+#[test]
+fn chengs_example_3_7() {
+    // x := cons(x, f(y))
+    // y := cons(y, f(x))
+
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(Cons x (f y))".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(Cons y (g x))".parse().unwrap());
+
+    runner.egraph.rebuild();
+    let rules: Vec<Rewrite> = vec![rw!(
+        "g-x";
+        "(g x)" => "(f x)"
+    )];
     runner = runner.with_iter_limit(2).run(&rules);
 
     assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+#[test]
+fn chengs_example_slack_25_11_25() {
+    // x := f(h(g(x)) := f(h(h(g(x))))
+    // y := h(y)
+
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(f (h (g x)))".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(h y)".parse().unwrap());
+
+    runner.egraph.rebuild();
+    let rules: Vec<Rewrite> = vec![rw!(
+        "g-f-z";
+        "(g (f ?x))" => "?x"
+    )];
+    runner = runner.with_iter_limit(2).run(&rules);
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+#[test]
+#[should_panic]
+fn circular_def() {
+    // x := f(x)
+    // y := y
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
+    let y = egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
+
+    // Expect to fail
+    egraph.rebuild();
 }

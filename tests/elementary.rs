@@ -143,8 +143,8 @@ fn equal_under_observation(
     debug: bool,
 ) -> bool {
     let mut runner: Runner = Runner::default();
-    let lhs_ids = runner.egraph.add_observation(&lhs, lhs_obs);
-    let rhs_ids = runner.egraph.add_observation(&rhs, rhs_obs);
+    let lhs_ids = runner.egraph.add_definition(&lhs, lhs_obs);
+    let rhs_ids = runner.egraph.add_definition(&rhs, rhs_obs);
     for (lhs_assume, rhs_assume) in assumption.iter() {
         let lhs_assume_id = runner.egraph.add_expr(lhs_assume);
         let rhs_assume_id = runner.egraph.add_expr(rhs_assume);
@@ -258,10 +258,10 @@ fn choose_observation() {
 
     let f = runner
         .egraph
-        .add_observation(&"f".parse().unwrap(), &"(Cons 1 (+ f f))".parse().unwrap());
+        .add_definition(&"f".parse().unwrap(), &"(Cons 1 (+ f f))".parse().unwrap());
     let g = runner
         .egraph
-        .add_observation(&"g".parse().unwrap(), &"(Cons 1 (* g 2))".parse().unwrap());
+        .add_definition(&"g".parse().unwrap(), &"(Cons 1 (* g 2))".parse().unwrap());
     // runner = runner.run(&make_simplification_rules());
     runner.egraph.dot().to_dot("choose_obs.dot");
 
@@ -273,16 +273,16 @@ fn simple_observation() {
     // let mut egraph = EGraph::default();
     let mut runner = Runner::default();
 
-    let f = runner.egraph.add_observation(
+    let f = runner.egraph.add_definition(
         &"f".parse().unwrap(),
         &"(Cons 1 (* 2 (- f)))".parse().unwrap(),
     );
-    let g = runner.egraph.add_observation(
+    let g = runner.egraph.add_definition(
         &"g".parse().unwrap(),
         &"(Cons 1 (- (* 2 g)))".parse().unwrap(),
     );
     runner = runner.run(&make_unification_rules());
-    runner.egraph.rebuild_observations();
+    runner.egraph.rebuild_definitions();
     runner.egraph.dot().to_dot("simple_obs.dot");
 
     assert_eq!(runner.egraph.find(f.0), runner.egraph.find(g.0))

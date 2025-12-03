@@ -3,6 +3,7 @@ use std::{
     borrow::BorrowMut,
     cmp::Ordering,
     fmt::{self, Debug, Display},
+    hash::Hash,
     marker::PhantomData,
 };
 
@@ -62,8 +63,8 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     unionfind: UnionFind,
     /// Stores the original node represented by each non-canonical id
     nodes: Vec<L>,
-    // Observations
-    observations: HashMap<Id, Id>,
+    // definitions
+    definitions: HashMap<Id, Id>,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
     /// Enodes in the memo are canonicalized at each rebuild, but after rebuilding new
     /// unions can cause them to become out of date.
@@ -122,7 +123,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             classes: Default::default(),
             unionfind: Default::default(),
             nodes: Default::default(),
-            observations: Default::default(),
+            definitions: Default::default(),
             clean: false,
             explain: None,
             pending: Default::default(),
@@ -632,7 +633,7 @@ where
         EGraph {
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
-            observations: src_egraph.observations,
+            definitions: src_egraph.definitions,
             unionfind: src_egraph.unionfind,
             memo: src_egraph.memo.into_iter().map(kv_map).collect(),
             pending: src_egraph.pending,
@@ -829,18 +830,18 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.find(id)
     }
 
-    /// [`add_observation`]: EGraph::add_observation()
-    pub fn add_observation(&mut self, in_expr: &RecExpr<L>, obs_expr: &RecExpr<L>) -> (Id, Id) {
-        let observed_id = self.add_expr_uncanonical(in_expr);
-        let canon_observed = self.find(observed_id);
-        // TODO - implement a merge observations routine!
-        assert!(!self.observations.contains_key(&canon_observed));
-        let observation_id = self.add_expr_uncanonical(obs_expr);
+    /// [`add_definition`]: EGraph::add_definition()
+    pub fn add_definition(&mut self, var_expr: &RecExpr<L>, def_expr: &RecExpr<L>) -> (Id, Id) {
+        let var_id = self.add_expr_uncanonical(var_expr);
+        let canon_var = self.find(var_id);
+        // TODO - implement a merge definitions routine!
+        assert!(!self.definitions.contains_key(&canon_var));
+        let definition_id = self.add_expr_uncanonical(def_expr);
 
-        let canon_observation = self.find(observation_id);
-        let old_obs = self.observations.insert(canon_observed, canon_observation);
-        assert!(old_obs.is_none());
-        (canon_observed, canon_observation)
+        let canon_definition = self.find(definition_id);
+        let old_var: Option<Id> = self.definitions.insert(canon_var, canon_definition);
+        assert!(old_var.is_none());
+        (canon_var, canon_definition)
     }
 
     /// Similar to [`add_expr`](EGraph::add_expr) but the `Id` returned may not be canonical
@@ -1311,16 +1312,16 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             assert_eq!(ids.len(), unique.len());
         }
 
-        // Deduplicate Observations
-        let mut new_observations = HashMap::default();
-        for (state, transition) in self.observations.iter() {
-            if let Some(obs) = new_observations.get(&self.find(*state)) {
-                assert_eq!(self.find(*transition), *obs);
+        // Deduplicate definitions
+        let mut new_definitions = HashMap::default();
+        for (state, transition) in self.definitions.iter() {
+            if let Some(def) = new_definitions.get(&self.find(*state)) {
+                assert_eq!(self.find(*transition), *def);
             }
-            new_observations.insert(self.find(*state), self.find(*transition));
+            new_definitions.insert(self.find(*state), self.find(*transition));
         }
 
-        self.observations = new_observations.clone();
+        self.definitions = new_definitions.clone();
 
         self.classes_by_op = classes_by_op;
         trimmed
@@ -1438,11 +1439,14 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         let start = Instant::now();
 
-        // Rebuild observations - must call before processing unions - which propagates the congruence
-        self.rebuild_observations();
+        // Rebuild definitions - must call before processing unions - which propagates the congruence
+        assert!(!self.check_circular_def());
+
+        self.rebuild_definitions();
 
         let n_unions = self.process_unions();
         let trimmed_nodes = self.rebuild_classes();
+        let trimmed_nodes = 0;
 
         let elapsed = start.elapsed();
         info!(
@@ -1473,36 +1477,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         } else {
             panic!("Can't check explain when explanations are off");
         }
-    }
-
-    fn propagate_observations_to_child(&self, id: Id, to_observe: &mut HashSet<Id>) {
-        if self.observations.contains_key(&id) || to_observe.contains(&id) {
-            return;
-        }
-        for enode in self[id].nodes.iter() {
-            if enode.is_leaf() {
-                continue;
-            }
-
-            to_observe.insert(id);
-
-            for child in enode.children() {
-                self.propagate_observations_to_child(*child, to_observe);
-            }
-        }
-    }
-
-    /// Propagate observations to children
-    fn propagate_observations(&mut self) {
-        let mut to_observe: HashSet<Id> = HashSet::default();
-        for (_, transition) in self.observations.iter() {
-            self.propagate_observations_to_child(self.find(*transition), &mut to_observe);
-        }
-
-        for id in to_observe.iter() {
-            self.observations.insert(*id, *id);
-        }
-        // println!("Observations {:?}", self.observations);
     }
 
     fn find_cycles(&self, mut f: impl FnMut(Id, usize)) {
@@ -1543,7 +1517,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         // Create z mapping: state -> (head, tuple of partitions for args)
         let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self
-            .observations
+            .definitions
             .iter()
             .map(|(state, transition)| {
                 // Sort nodes according to discriminant - to ensure we have a canonical form
@@ -1572,7 +1546,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         // Group by z values
         for (_, equivs) in self
-            .observations
+            .definitions
             .keys()
             .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
             .group_by(|state| z[*state].clone())
@@ -1639,12 +1613,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // Now add all the definitional transitions - which we just unfold as
         // above but peeling off the first level of transition
         // x := f(y) => x --f--> y
-        for (state, transition) in self.observations.iter() {
+        for (state, transition) in self.definitions.iter() {
             let canon_transition = self.find(*transition);
-            let part = partmap
-                .get(&canon_transition)
-                .map(|partition| partition.clone())
-                .unwrap_or_else(|| vec![canon_transition.clone()]);
             let mut transitions = HashSet::default();
 
             let state_id = self.find(*state);
@@ -1724,14 +1694,13 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     /// Automata Minimization
-    pub fn rebuild_observations(&mut self) {
-        let debug = false;
+    pub fn rebuild_definitions(&mut self) {
+        let debug = true;
         if debug {
             for class in self.classes() {
                 println!("{}->{:?}", class.id, class.nodes);
             }
         }
-        // self.propagate_observations();
         let observed: Vec<Id> = self.classes().map(|c| c.id).collect();
         // Initial unrefined partition - all observed entities in one group
         let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
@@ -1753,22 +1722,21 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // Perform further refinement to avoid unioning x := def(x) cases...
 
         for part in partmap.values() {
-            let mut base_obs = None;
+            let mut base_def = None;
             let mut base_rw = None;
             for j in part.iter() {
-                // Only union observations with observations, and rewrites with rewrites
-                // TODO - figure out why this is broken???
-                if self.observations.contains_key(j) {
-                    if base_obs.is_none() {
-                        base_obs = Some(j);
+                // Only union definitions with definitions, and rewrites with rewrites
+                if self.definitions.contains_key(j) {
+                    if base_def.is_none() {
+                        base_def = Some(j);
                     } else {
                         if debug {
-                            println!("Union Observations {} and {}", j, base_obs.unwrap());
+                            println!("Union Definitions {} and {}", j, base_def.unwrap());
                         }
                         self.union_instantiations(
                             &self.id_to_pattern(*j, &Default::default()).0.ast,
                             &self
-                                .id_to_pattern(*base_obs.unwrap(), &Default::default())
+                                .id_to_pattern(*base_def.unwrap(), &Default::default())
                                 .0
                                 .ast,
                             &Default::default(),
@@ -1796,6 +1764,24 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 // self.union(*j, part[0]);
             }
         }
+    }
+
+    // Detect whether the definitions contain circularities
+    fn check_circular_def(&self) -> bool {
+        for state in self.definitions.keys() {
+            let mut next_state = self.definitions.get(state).unwrap();
+            let mut visited: HashSet<&Id> = HashSet::from([state]);
+            // Follow definitions until we cycle or reach a terminal
+            while self.definitions.contains_key(next_state) {
+                if visited.contains(next_state) {
+                    println!("Circular definition detected at {}", next_state);
+                    return true;
+                }
+                visited.insert(next_state);
+                next_state = self.definitions.get(next_state).unwrap();
+            }
+        }
+        return false;
     }
 }
 
