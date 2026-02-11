@@ -13,6 +13,7 @@ define_language! {
         "S" = Successor([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
+        "*" = Mul([Id; 2]),
         "f" = F([Id; 1]),
         "g" = G([Id; 1]),
         "h" = H([Id; 1]),
@@ -256,6 +257,8 @@ fn cocaml_elements() {
 #[test]
 fn smt_successor() {
     // Example taken from SMT paper Example 2 Section 3:
+    // a := S(a)
+    // b := S(S(b))
     // https://homepage.divms.uiowa.edu/~ajreynol/cade15.pdf
     let mut egraph = EGraph::default();
     let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
@@ -452,4 +455,92 @@ fn circular_def() {
 
     // Expect to fail
     egraph.rebuild();
+}
+
+// Figure 2(a) Example - Goal:  show that x \in {1+5z | z \in Nat}
+// x = 1;
+// while 1 {
+//      x = x + (1 * 5);
+// }
+// Represented as streams:
+// x := cons(1, x + (1 * 5))
+// elements(x) = elements(cons(1, x + (1*5))) = {1} ∪ elements(x + (1*5)) = {1} ∪ (elements(x) + elements(1*5))
+#[test]
+fn russel_fig_2() {
+    // x := cons(1, 5 + x)
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 1 (5 + x))".parse().unwrap());
+
+    // Expect to fail
+    egraph.rebuild();
+}
+
+// Figure 6 Example - Goal: show that z == 42:
+// fn example1 ( y ) {
+//  let x = -6;
+//  let z = 42;
+//  while y < 10 {
+//      y = y + 1;
+//      x = x + 8;
+//      xt = x + 8;
+//      let lhs = (( xt + y ) + z ) * y ;
+//      let rhs = 2 * y + ( y * y + z * y ) ;
+//      if lhs ! = rhs {
+//          z = 24;
+//      }
+//      x = xt - 8;
+//  }
+//  return z + 7;
+// }
+// Represented as streams:
+// xt:= x+8 --> cons(-6+8, xt-8+8) --> cons(2, xt)
+// x := cons(-6, xt-8) --> cons(-6, x)
+// y := cons(y0, y+1)
+// lhs := (xt + y + z) * y
+// rhs := 2*y + (y*y + z*y)
+// z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
+// Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
+#[test]
+fn russel_fig_6() {
+    // TODO
+}
+
+// Figure 7 Example - Goal: show that x==y
+// fn example2 (x) {
+// let y = x ;
+// while y < 10 {
+//      let xt = x ;
+//      x = y * y + y * 5;
+//      y = xt * ( y + 5 + 0) ;
+// }
+//  return x - y;
+// }
+
+// Represented as streams:
+// x := cons(x0, y*y + y*5)
+// xt := x
+// y := cons(x0, xt*(y + 5 + 0)) --> rewriting -->  cons(x0, x * y + x * 5)
+#[test]
+fn russel_fig_7() {
+    // x := cons(0, y*(y+5))
+    // xt := x
+    // y := cons(0, xt*(y+5))
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(
+        &"x".parse().unwrap(),
+        &"(Cons x0 (* y (+ y 5)))".parse().unwrap(),
+    );
+
+    let xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
+
+    let y = egraph.add_definition(
+        &"y".parse().unwrap(),
+        &"(Cons x0 (* xt (+ y 5)))".parse().unwrap(),
+    );
+
+    // Expect to fail
+    egraph.rebuild();
+    egraph.dot().automata_to_dot("russel_fig_7.dot");
+
+    assert_eq!(egraph.find(x.0), egraph.find(y.0));
 }
