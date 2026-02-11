@@ -1,11 +1,13 @@
 use egg::rewrite as rw;
 use egg::*;
 use std::collections::HashSet;
-use std::f32::consts::E;
 
-pub type EGraph = egg::EGraph<StreamLanguage, StreamsAnalysis>;
-pub type Rewrite = egg::Rewrite<StreamLanguage, StreamsAnalysis>;
+type EGraph = egg::EGraph<StreamLanguage, StreamsAnalysis>;
+type Rewrite = egg::Rewrite<StreamLanguage, StreamsAnalysis>;
 
+//----------------------------------------------------------------------------//
+// Language - captures standard operations on streams
+//----------------------------------------------------------------------------//
 define_language! {
     enum StreamLanguage {
         Num(i32),
@@ -23,6 +25,9 @@ define_language! {
     }
 }
 
+//----------------------------------------------------------------------------//
+// Analysis - performing constant folding & unique elements of stream (sets)
+//----------------------------------------------------------------------------//
 #[derive(Debug, Clone)]
 struct StreamsData {
     constant: Option<(i32, PatternAst<StreamLanguage>)>, // For constant folding
@@ -122,43 +127,24 @@ fn make_rules() -> Vec<Rewrite> {
     ]
 }
 
+//----------------------------------------------------------------------------//
+// Basic Functionalities
+//----------------------------------------------------------------------------//
 #[test]
-fn simple_ones() {
-    // Basic example inspired by Cocaml
+#[should_panic]
+fn circular_definition_detection() {
+    // x := f(x)
+    // y := y
     let mut egraph = EGraph::default();
-    let a = "a".parse().unwrap();
-    let astream = "(Cons 1 a)".parse().unwrap();
-    let ids_a = egraph.add_definition(&a, &astream);
-    let b = "b".parse().unwrap();
-    let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
-    let ids_b = egraph.add_definition(&b, &bstream);
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
+    let y = egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
+
+    // Expect to fail
     egraph.rebuild();
-    assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
 
 #[test]
-fn commutative() {
-    // From Phil Zucker's Blog: https://www.philipzucker.com/coegraph/
-    let mut runner: Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    // let mut egraph = EGraph::<StreamLanguage, ()>::default();
-    // let-rec ab = cons( (a + b) ab)
-    let ab = "ab".parse().unwrap();
-    let abstream = "(Cons (+ a b) ab)".parse().unwrap();
-    let ids_ab = runner.egraph.add_definition(&ab, &abstream);
-    // let-rec ba = cons( (b + a) ba)
-    let ba = "ba".parse().unwrap();
-    let bastream = "(Cons (+ b a) ba)".parse().unwrap();
-    let ids_ba = runner.egraph.add_definition(&ba, &bastream);
-
-    println!("E-Graph Size {}", runner.egraph.number_of_classes());
-    runner = runner.run(&make_rules());
-    println!("E-Graph Size {}", runner.egraph.number_of_classes());
-
-    assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
-}
-
-#[test]
-fn simple_trees() {
+fn trees() {
     // From Wojtek's Slack Example
     let mut egraph = EGraph::default();
 
@@ -178,35 +164,62 @@ fn simple_trees() {
 }
 
 #[test]
-fn simple_dfa() {
-    // From Phil Zucker's Blog: https://www.philipzucker.com/naive_automata/
+fn idempotent_function() {
+    // Check that e-graph equivalence loops (x+0->x) don't merge definitions
+    // a := f(a'+0)
+    // b := f(b'+0)
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let a = runner
+        .egraph
+        .add_definition(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
+    let b = runner
+        .egraph
+        .add_definition(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
+
+    // runner.egraph.rebuild();
+    runner = runner.with_iter_limit(2).run(&make_rules());
+
+    assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
+}
+
+#[test]
+fn merged_observations() {
+    // Definitions
+    // x := Cons(z, f(x))
+    // y := Cons(z, w)
+    // Equivalences
+    // f(x) = g(x)
+    // f(y) = w
     let mut egraph = EGraph::default();
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons z (f x))".parse().unwrap());
+    let fx = egraph.add_expr(&"(f x)".parse().unwrap());
+    let gx = egraph.add_expr(&"(g x)".parse().unwrap());
+    egraph.union(fx, gx);
 
-    egraph.add_definition(
-        &"one".parse().unwrap(),
-        &"(Node False two three)".parse().unwrap(),
-    );
-    let two = egraph.add_definition(
-        &"two".parse().unwrap(),
-        &"(Node False four three)".parse().unwrap(),
-    );
-    let three = egraph.add_definition(
-        &"three".parse().unwrap(),
-        &"(Node False five three)".parse().unwrap(),
-    );
-    let four = egraph.add_definition(
-        &"four".parse().unwrap(),
-        &"(Node True five four)".parse().unwrap(),
-    );
-    let five = egraph.add_definition(
-        &"five".parse().unwrap(),
-        &"(Node True four four)".parse().unwrap(),
-    );
-
+    let y = egraph.add_definition(&"y".parse().unwrap(), &"(Cons z w)".parse().unwrap());
+    let fy = egraph.add_expr(&"(f y)".parse().unwrap());
+    let h = egraph.add_expr(&"w".parse().unwrap());
+    egraph.union(fy, h);
     egraph.rebuild();
+    assert_eq!(egraph.find(x.0), egraph.find(y.0));
+}
 
-    assert_eq!(egraph.find(two.0), egraph.find(three.0));
-    assert_eq!(egraph.find(four.0), egraph.find(five.0));
+//----------------------------------------------------------------------------//
+// SOURCE: CoCaml Paper
+// CoCaml: Functional Programming with Regular Coinductive Types
+//----------------------------------------------------------------------------//
+#[test]
+fn simple_ones() {
+    // Basic example inspired by Cocaml
+    let mut egraph = EGraph::default();
+    let a = "a".parse().unwrap();
+    let astream = "(Cons 1 a)".parse().unwrap();
+    let ids_a = egraph.add_definition(&a, &astream);
+    let b = "b".parse().unwrap();
+    let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
+    let ids_b = egraph.add_definition(&b, &bstream);
+    egraph.rebuild();
+    assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
 }
 
 #[test]
@@ -254,12 +267,70 @@ fn cocaml_elements() {
     assert_eq!(egraph[alt.1].data.elements, HashSet::from([1, 2]));
 }
 
+//----------------------------------------------------------------------------//
+// SOURCE: Phil Zucker's Blog
+// commutative = https://www.philipzucker.com/coegraph/
+// simple_dfa  = https://www.philipzucker.com/naive_automata/
+//----------------------------------------------------------------------------//
+#[test]
+fn commutative() {
+    let mut runner: Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    // let mut egraph = EGraph::<StreamLanguage, ()>::default();
+    // let-rec ab = cons( (a + b) ab)
+    let ab = "ab".parse().unwrap();
+    let abstream = "(Cons (+ a b) ab)".parse().unwrap();
+    let ids_ab = runner.egraph.add_definition(&ab, &abstream);
+    // let-rec ba = cons( (b + a) ba)
+    let ba = "ba".parse().unwrap();
+    let bastream = "(Cons (+ b a) ba)".parse().unwrap();
+    let ids_ba = runner.egraph.add_definition(&ba, &bastream);
+
+    runner = runner.run(&make_rules());
+
+    assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+}
+
+#[test]
+fn simple_dfa() {
+    let mut egraph = EGraph::default();
+
+    egraph.add_definition(
+        &"one".parse().unwrap(),
+        &"(Node False two three)".parse().unwrap(),
+    );
+    let two = egraph.add_definition(
+        &"two".parse().unwrap(),
+        &"(Node False four three)".parse().unwrap(),
+    );
+    let three = egraph.add_definition(
+        &"three".parse().unwrap(),
+        &"(Node False five three)".parse().unwrap(),
+    );
+    let four = egraph.add_definition(
+        &"four".parse().unwrap(),
+        &"(Node True five four)".parse().unwrap(),
+    );
+    let five = egraph.add_definition(
+        &"five".parse().unwrap(),
+        &"(Node True four four)".parse().unwrap(),
+    );
+
+    egraph.rebuild();
+
+    assert_eq!(egraph.find(two.0), egraph.find(three.0));
+    assert_eq!(egraph.find(four.0), egraph.find(five.0));
+}
+
+//----------------------------------------------------------------------------//
+// SOURCE: SMT Paper
+// A Decision Procedure for (Co)datatypes in SMT Solvers
+// https://homepage.divms.uiowa.edu/~ajreynol/cade15.pdf
+//----------------------------------------------------------------------------//
 #[test]
 fn smt_successor() {
     // Example taken from SMT paper Example 2 Section 3:
     // a := S(a)
     // b := S(S(b))
-    // https://homepage.divms.uiowa.edu/~ajreynol/cade15.pdf
     let mut egraph = EGraph::default();
     let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
     let b = egraph.add_definition(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
@@ -267,59 +338,102 @@ fn smt_successor() {
     assert_eq!(egraph.find(a.0), egraph.find(b.0));
 }
 
+//----------------------------------------------------------------------------//
+// SOURCE: Berkeley Paper
+// Optimism in Equality Saturation
+// https://arxiv.org/abs/2511.20782
+//----------------------------------------------------------------------------//
 #[test]
-fn merged_observations() {
-    let start = std::time::Instant::now();
+fn russel_fig_2() {
+    // Figure 2(a) Example - Goal:  show that x \in {1+5z | z \in Nat}
+    // x = 1;
+    // while 1 {
+    //      x = x + (1 * 5);
+    // }
+    // Represented as streams:
+    // x := cons(1, x + (1 * 5))
+    // elements(x) = elements(cons(1, x + (1*5))) = {1} ∪ elements(x + (1*5)) = {1} ∪ (elements(x) + elements(1*5))
+    // x := cons(1, 5 + x)
     let mut egraph = EGraph::default();
-    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons z (f x))".parse().unwrap());
-    let fx = egraph.add_expr(&"(f x)".parse().unwrap());
-    let gx = egraph.add_expr(&"(g x)".parse().unwrap());
-    egraph.union(fx, gx);
+    let _x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 1 (+ 5 x))".parse().unwrap());
+    let _elts = egraph.add_expr(&"(elements x)".parse().unwrap());
 
-    let y = egraph.add_definition(&"y".parse().unwrap(), &"(Cons z w)".parse().unwrap());
-    let fy = egraph.add_expr(&"(f y)".parse().unwrap());
-    let h = egraph.add_expr(&"w".parse().unwrap());
-    egraph.union(fy, h);
     egraph.rebuild();
-    // egraph.dot().to_dot("merged_obs.dot");
+}
+
+#[test]
+fn russel_fig_6() {
+    // Figure 6 Example - Goal: show that z == 42:
+    // fn example1 ( y ) {
+    //  let x = -6;
+    //  let z = 42;
+    //  while y < 10 {
+    //      y = y + 1;
+    //      x = x + 8;
+    //      xt = x + 8;
+    //      let lhs = (( xt + y ) + z ) * y ;
+    //      let rhs = 2 * y + ( y * y + z * y ) ;
+    //      if lhs ! = rhs {
+    //          z = 24;
+    //      }
+    //      x = xt - 8;
+    //  }
+    //  return z + 7;
+    // }
+    // Represented as streams:
+    // xt:= x+8 --> cons(-6+8, xt-8+8) --> cons(2, xt)
+    // x := cons(-6, xt-8) --> cons(-6, x)
+    // y := cons(y0, y+1)
+    // lhs := (xt + y + z) * y
+    // rhs := 2*y + (y*y + z*y)
+    // z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
+    // Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
+    // TODO
+}
+
+#[test]
+fn russel_fig_7() {
+    // Figure 7 Example - Goal: show that x==y
+    // fn example2 (x) {
+    // let y = x ;
+    // while y < 10 {
+    //      let xt = x ;
+    //      x = y * y + y * 5;
+    //      y = xt * ( y + 5 + 0) ;
+    // }
+    //  return x - y;
+    // }
+
+    // Represented as streams:
+    // x := cons(x0, y*y + y*5)
+    // xt := x
+    // y := cons(x0, xt*(y + 5 + 0)) --> rewriting -->  cons(x0, x * y + x * 5)
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(
+        &"x".parse().unwrap(),
+        &"(Cons x0 (* y (+ y 5)))".parse().unwrap(),
+    );
+
+    let xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
+
+    let y = egraph.add_definition(
+        &"y".parse().unwrap(),
+        &"(Cons x0 (* xt (+ y 5)))".parse().unwrap(),
+    );
+
+    // Expect to fail
+    egraph.rebuild();
+    egraph.dot().automata_to_dot("russel_fig_7.dot");
+
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
-    println!("Test runtime: {:?}", start.elapsed());
 }
 
+//----------------------------------------------------------------------------//
+// SOURCE: Cheng's Examples (Slack and Working Document)
+//----------------------------------------------------------------------------//
+#[should_panic]
 #[test]
-fn idempotent_function() {
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let a = runner
-        .egraph
-        .add_definition(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
-    let b = runner
-        .egraph
-        .add_definition(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
-
-    // runner.egraph.rebuild();
-    runner = runner.with_iter_limit(2).run(&make_rules());
-
-    assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
-}
-
-#[test]
-fn rebuilding() {
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let ab = runner.egraph.add_expr(&"(+ a b)".parse().unwrap());
-    let ba = runner.egraph.add_expr(&"(+ b a)".parse().unwrap());
-    let a = runner.egraph.add_expr(&"(f (+ a b))".parse().unwrap());
-    let b = runner.egraph.add_expr(&"(f (+ b a))".parse().unwrap());
-    // runner.egraph.union(ab, ba);
-    assert_ne!(runner.egraph.find(a), runner.egraph.find(b));
-    // runner.egraph.rebuild();
-    runner = runner.with_iter_limit(2).run(&make_rules());
-    println!("E-Graph {:?}", runner.egraph);
-
-    assert_eq!(runner.egraph.find(a), runner.egraph.find(b));
-}
-
-#[test]
-fn chengs_example() {
+fn chengs_example_circular() {
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let x = runner
         .egraph
@@ -442,105 +556,4 @@ fn chengs_example_slack_25_11_25() {
     runner = runner.with_iter_limit(2).run(&rules);
 
     assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
-}
-
-#[test]
-#[should_panic]
-fn circular_def() {
-    // x := f(x)
-    // y := y
-    let mut egraph = EGraph::default();
-    let x = egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
-    let y = egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
-
-    // Expect to fail
-    egraph.rebuild();
-}
-
-// Figure 2(a) Example - Goal:  show that x \in {1+5z | z \in Nat}
-// x = 1;
-// while 1 {
-//      x = x + (1 * 5);
-// }
-// Represented as streams:
-// x := cons(1, x + (1 * 5))
-// elements(x) = elements(cons(1, x + (1*5))) = {1} ∪ elements(x + (1*5)) = {1} ∪ (elements(x) + elements(1*5))
-#[test]
-fn russel_fig_2() {
-    // x := cons(1, 5 + x)
-    let mut egraph = EGraph::default();
-    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 1 (5 + x))".parse().unwrap());
-
-    // Expect to fail
-    egraph.rebuild();
-}
-
-// Figure 6 Example - Goal: show that z == 42:
-// fn example1 ( y ) {
-//  let x = -6;
-//  let z = 42;
-//  while y < 10 {
-//      y = y + 1;
-//      x = x + 8;
-//      xt = x + 8;
-//      let lhs = (( xt + y ) + z ) * y ;
-//      let rhs = 2 * y + ( y * y + z * y ) ;
-//      if lhs ! = rhs {
-//          z = 24;
-//      }
-//      x = xt - 8;
-//  }
-//  return z + 7;
-// }
-// Represented as streams:
-// xt:= x+8 --> cons(-6+8, xt-8+8) --> cons(2, xt)
-// x := cons(-6, xt-8) --> cons(-6, x)
-// y := cons(y0, y+1)
-// lhs := (xt + y + z) * y
-// rhs := 2*y + (y*y + z*y)
-// z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
-// Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
-#[test]
-fn russel_fig_6() {
-    // TODO
-}
-
-// Figure 7 Example - Goal: show that x==y
-// fn example2 (x) {
-// let y = x ;
-// while y < 10 {
-//      let xt = x ;
-//      x = y * y + y * 5;
-//      y = xt * ( y + 5 + 0) ;
-// }
-//  return x - y;
-// }
-
-// Represented as streams:
-// x := cons(x0, y*y + y*5)
-// xt := x
-// y := cons(x0, xt*(y + 5 + 0)) --> rewriting -->  cons(x0, x * y + x * 5)
-#[test]
-fn russel_fig_7() {
-    // x := cons(0, y*(y+5))
-    // xt := x
-    // y := cons(0, xt*(y+5))
-    let mut egraph = EGraph::default();
-    let x = egraph.add_definition(
-        &"x".parse().unwrap(),
-        &"(Cons x0 (* y (+ y 5)))".parse().unwrap(),
-    );
-
-    let xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
-
-    let y = egraph.add_definition(
-        &"y".parse().unwrap(),
-        &"(Cons x0 (* xt (+ y 5)))".parse().unwrap(),
-    );
-
-    // Expect to fail
-    egraph.rebuild();
-    egraph.dot().automata_to_dot("russel_fig_7.dot");
-
-    assert_eq!(egraph.find(x.0), egraph.find(y.0));
 }
