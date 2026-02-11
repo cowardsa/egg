@@ -71,6 +71,13 @@ where
         write!(file, "{}", self)
     }
 
+    /// Writes the automata representation a .dot file with the given filename.
+    /// Does _not_ require a `dot` binary.
+    pub fn automata_to_dot(&self, filename: impl AsRef<Path>) -> Result<()> {
+        let mut file = std::fs::File::create(filename)?;
+        self.print_automata(&mut file)
+    }
+
     /// Adds a line to the dot output.
     /// Indentation and a newline will be added automatically.
     pub fn with_config_line(mut self, line: impl Into<String>) -> Self {
@@ -167,6 +174,57 @@ where
             (3, 2) => (s(":se"), s("")),
             (_, _) => (s(""), format!("label={}", i)),
         }
+    }
+
+    fn print_automata(&self, f: &mut std::fs::File) -> std::io::Result<()> {
+        writeln!(f, "digraph egraph {{")?;
+
+        // set compound=true to enable edges to clusters
+        writeln!(f, "  compound=true")?;
+        writeln!(f, "  clusterrank=local")?;
+
+        for line in &self.config {
+            writeln!(f, "  {}", line)?;
+        }
+
+        // define all the nodes, clustered by eclass
+        for class in self.egraph.classes() {
+            writeln!(f, "    {}[label = \"e{}\"]", class.id, class.id)?;
+            for (i, node) in class.iter().enumerate() {
+                writeln!(f, "    {}.{}[label = \"{}\"]", class.id, i, node)?;
+            }
+        }
+
+        for class in self.egraph.classes() {
+            for (i_in_class, node) in class.iter().enumerate() {
+                writeln!(
+                    f,
+                    // {}.0 to pick an arbitrary node in the cluster
+                    "  {} -> {}.{}",
+                    class.id, class.id, i_in_class
+                )?;
+
+                node.try_for_each(|child: crate::Id| {
+                    // write the edge to the child, but clip it to the eclass with lhead
+                    let child_leader = self.egraph.find(child);
+
+                    writeln!(
+                        f,
+                        // {}.0 to pick an arbitrary node in the cluster
+                        "  {}.{} -> {}",
+                        class.id, i_in_class, child_leader
+                    )?;
+                    Ok::<(), std::io::Error>(())
+                })?;
+            }
+        }
+
+        for (var, def) in self.egraph.definitions() {
+            writeln!(f, "  {}.0 -> {} [color=blue, label=\"def\"]", var, def)?;
+        }
+
+        write!(f, "}}")?;
+        Ok(())
     }
 }
 
