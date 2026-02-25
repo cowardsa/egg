@@ -138,6 +138,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.classes.values()
     }
 
+    /// Returns an iterator over the definitions in the egraph.
+    pub fn definitions(&self) -> impl ExactSizeIterator<Item = (&Id, &Id)> {
+        self.definitions.iter()
+    }
+
     /// Returns an mutating iterator over the eclasses in the egraph.
     pub fn classes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut EClass<L, N::Data>> {
         self.classes.values_mut()
@@ -836,9 +841,19 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let canon_var = self.find(var_id);
         // TODO - implement a merge definitions routine!
         assert!(!self.definitions.contains_key(&canon_var));
+        // Add definition to e-graph
         let definition_id = self.add_expr_uncanonical(def_expr);
-
         let canon_definition = self.find(definition_id);
+
+        // If a simple assignment to an already defined variable x := y
+        // add definitional edge to definition of y
+        if self.definitions.contains_key(&canon_definition) {
+            let new_def = self.definitions[&canon_definition];
+            let old_var: Option<Id> = self.definitions.insert(canon_var, new_def);
+            assert!(old_var.is_none());
+            return (canon_var, canon_definition);
+        }
+
         let old_var: Option<Id> = self.definitions.insert(canon_var, canon_definition);
         assert!(old_var.is_none());
         (canon_var, canon_definition)
@@ -1674,12 +1689,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     // Test for intersection with any element of equivs
                     for c in equivs[check_from..].iter() {
                         if !z[c].is_disjoint(&z[&b]) {
+                            equivs.push(b.clone());
                             extend_equivs = true;
                             break;
                         }
-                    }
-                    if extend_equivs {
-                        equivs.push(b.clone());
                     }
 
                     check_from = equivs_checked - 1;

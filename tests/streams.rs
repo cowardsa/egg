@@ -121,6 +121,7 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
 fn make_rules() -> Vec<Rewrite> {
     vec![
         rw!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+        rw!("add-two"; "(+ ?a ?a)" => "(* 2 ?a)"),
         rw!("add-zero"; "(+ ?a 0)" => "?a"),
         rw!("propagate-map"; "(Map ?func (Cons ?a ?b))" => "(Cons (App ?func ?a) (Map ?func ?b))"),
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
@@ -166,8 +167,8 @@ fn trees() {
 #[test]
 fn idempotent_function() {
     // Check that e-graph equivalence loops (x+0->x) don't merge definitions
-    // a := f(a'+0)
-    // b := f(b'+0)
+    // a := Cons(x, 2 + 0)
+    // b := Cons(x, 1 + 0)
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     let a = runner
         .egraph
@@ -178,7 +179,7 @@ fn idempotent_function() {
 
     // runner.egraph.rebuild();
     runner = runner.with_iter_limit(2).run(&make_rules());
-
+    runner.egraph.dot().automata_to_dot("idempotent.dot");
     assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
 }
 
@@ -204,6 +205,35 @@ fn merged_observations() {
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
 }
 
+#[test]
+fn needs_minimization() {
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(Cons 0 (* 2 x))".parse().unwrap());
+
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(Cons 0 (* 2 y))".parse().unwrap());
+
+    let z = runner
+        .egraph
+        .add_definition(&"z".parse().unwrap(), &"(Cons 0 (+ x y))".parse().unwrap());
+
+    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_ne!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+
+    runner.egraph.rebuild();
+    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_ne!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+
+    runner = runner.with_iter_limit(2).run(&make_rules());
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_eq!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+}
 //----------------------------------------------------------------------------//
 // SOURCE: CoCaml Paper
 // CoCaml: Functional Programming with Regular Coinductive Types
@@ -276,7 +306,8 @@ fn cocaml_elements() {
 fn commutative() {
     let mut runner: Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
-    // let-rec ab = cons( (a + b) ab)
+    // ab =: cons( (a + b) ab)
+    // ba =: cons( (b + a) ba)
     let ab = "ab".parse().unwrap();
     let abstream = "(Cons (+ a b) ab)".parse().unwrap();
     let ids_ab = runner.egraph.add_definition(&ab, &abstream);
@@ -286,7 +317,7 @@ fn commutative() {
     let ids_ba = runner.egraph.add_definition(&ba, &bastream);
 
     runner = runner.run(&make_rules());
-
+    runner.egraph.dot().automata_to_dot("phil_example.dot");
     assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
 }
 
@@ -321,6 +352,27 @@ fn simple_dfa() {
     assert_eq!(egraph.find(four.0), egraph.find(five.0));
 }
 
+// def myfun():
+//     i = 1
+//     j = 1
+//     k = 0
+//     while k < 100:
+//         if j < 20:
+//             j = i
+//             k = k+1
+//         else:
+//             j = k
+//             k = k + 2
+//     return j
+//
+// i := cons(1, i)
+// j := cons(1, if (j<20) then i else k)
+// k := cons(0, if (j<20) then (k+1) else (k+2))
+
+// (j<20) = cons(1, if (j<20) then i else k) < 20
+//        = cons(1 < 20, if (j<20) then (i < 20) else (k < 20))
+//        = cons(True, if (j<20) then Trues else (k<20))
+// (i < 20) = cons(1<20, (i<20)) = cons(false, (i<20))
 //----------------------------------------------------------------------------//
 // SOURCE: SMT Paper
 // A Decision Procedure for (Co)datatypes in SMT Solvers
@@ -414,7 +466,7 @@ fn russel_fig_7() {
         &"(Cons x0 (* y (+ y 5)))".parse().unwrap(),
     );
 
-    let xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
+    let _xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
 
     let y = egraph.add_definition(
         &"y".parse().unwrap(),
@@ -423,7 +475,7 @@ fn russel_fig_7() {
 
     // Expect to fail
     egraph.rebuild();
-    egraph.dot().automata_to_dot("russel_fig_7.dot");
+    // egraph.dot().automata_to_dot("russel_fig_7.dot");
 
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
 }
