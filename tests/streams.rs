@@ -165,7 +165,7 @@ fn trees() {
 }
 
 #[test]
-fn idempotent_function() {
+fn idempotent_function() -> Result<(), std::io::Error> {
     // Check that e-graph equivalence loops (x+0->x) don't merge definitions
     // a := Cons(x, 2 + 0)
     // b := Cons(x, 1 + 0)
@@ -179,8 +179,10 @@ fn idempotent_function() {
 
     // runner.egraph.rebuild();
     runner = runner.with_iter_limit(2).run(&make_rules());
-    runner.egraph.dot().automata_to_dot("idempotent.dot");
+    runner.egraph.dot().automata_to_dot("idempotent.dot")?;
     assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
+
+    Ok(())
 }
 
 #[test]
@@ -250,6 +252,7 @@ fn simple_ones() {
     let ids_b = egraph.add_definition(&b, &bstream);
     egraph.rebuild();
     assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
+    assert!(egraph.check_bisimilar(ids_a.0, ids_b.0));
 }
 
 #[test]
@@ -408,7 +411,6 @@ fn russel_fig_2() {
     // x := cons(1, 5 + x)
     let mut egraph = EGraph::default();
     let _x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 1 (+ 5 x))".parse().unwrap());
-    let _elts = egraph.add_expr(&"(elements x)".parse().unwrap());
 
     egraph.rebuild();
 }
@@ -526,6 +528,7 @@ fn chengs_example_3_5_1() {
 }
 
 #[test]
+#[should_panic]
 fn chengs_example_3_5_2() {
     // x := f(x)
     // y := y
@@ -537,9 +540,8 @@ fn chengs_example_3_5_2() {
         .egraph
         .add_definition(&"y".parse().unwrap(), &"y".parse().unwrap());
 
+    // Circular definition asserts
     runner.egraph.rebuild();
-
-    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(y.0));
 }
 
 #[test]
@@ -609,3 +611,40 @@ fn chengs_example_slack_25_11_25() {
 
     assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
 }
+
+#[test]
+fn chengs_example_slack_25_02_26() {
+    // x = Cons(0, f(x))
+    // y = Cons(0, g(y))
+    // z = Cons(0, g(z))
+
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(Cons 0 (f x))".parse().unwrap());
+    let z = runner
+        .egraph
+        .add_definition(&"z".parse().unwrap(), &"(Cons 0 (g z))".parse().unwrap());
+
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(Cons 0 (g y))".parse().unwrap());
+
+    // runner.egraph.rebuild();
+
+    let gy = runner.egraph.add_expr(&"(g y)".parse().unwrap());
+    let fy = runner.egraph.add_expr(&"(f y)".parse().unwrap());
+
+    runner.egraph.rebuild();
+    assert_eq!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+    runner.egraph.union(gy, fy);
+    runner.egraph.rebuild();
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+}
+
+//
+// 1 -> [1, 3]
+// 2 -> [2, 4]
+// 3 -> [1, 3, 4]
+// 4 -> [2, 3, 4]

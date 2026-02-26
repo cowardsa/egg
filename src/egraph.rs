@@ -1,9 +1,7 @@
 use crate::*;
 use std::{
     borrow::BorrowMut,
-    cmp::Ordering,
     fmt::{self, Debug, Display},
-    hash::Hash,
     marker::PhantomData,
 };
 
@@ -12,8 +10,6 @@ use hashbrown::HashSet;
 use serde::{Deserialize, Serialize};
 
 use log::*;
-
-use itertools::Itertools;
 
 /** A data structure to keep track of equalities between expressions.
 
@@ -859,6 +855,22 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         (canon_var, canon_definition)
     }
 
+    /// [`check_bisimilar`]: EGraph::check_bisimilar()
+    pub fn check_bisimilar(&self, id1: Id, id2: Id) -> bool {
+        let canon_id1 = self.find(id1);
+        let canon_id2 = self.find(id2);
+        if canon_id1 == canon_id2 {
+            return true;
+        }
+        assert!(self.definitions.contains_key(&canon_id1));
+        assert!(self.definitions.contains_key(&canon_id2));
+        if self.find(self.definitions[&canon_id1]) == self.find(self.definitions[&canon_id2]) {
+            return true;
+        }
+
+        return false;
+    }
+
     /// Similar to [`add_expr`](EGraph::add_expr) but the `Id` returned may not be canonical
     ///
     /// Calling [`id_to_expr`](EGraph::id_to_expr) on this `Id` return a copy of `expr` when explanations are enabled
@@ -1526,6 +1538,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     /// A fast but conservative partition refinement that does not guarantee minimal partitions.
+    /*
     fn refine_partition_fast(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
         // println!("Partmap {:?}", partmap);
         let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
@@ -1574,10 +1587,17 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
         newpartmap
     }
+    */
 
     // A complete partition refinement that guarantees minimal partitions.
+    // refine_partition_minimal(partmap) -> newpartmap
+    // egraph.find_cycles() -> {(id, node index) | node in e-class id is part of a cycle}
+    // Construct transition system (skip cyclic nodes):
+    // id -- label(fn symbol) --> {partmap[child1], partmap[child2], ...}
+    // z: Id -> {(label, [partmap[child1], partmap[child2], ...]), ... | label(child1, child2, ...) \in Id's e-class}
     fn refine_partition_minimal(
         &mut self,
+        // TODO - partmap should map to a hashset - why do we need order?
         partmap: &HashMap<Id, Vec<Id>>,
         debug: bool,
     ) -> HashMap<Id, Vec<Id>> {
@@ -1590,7 +1610,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         if debug {
             println!("Partmap {:?}", partmap);
         }
-        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
         // Create z mapping: state -> (head, tuple of partitions for args)
         let mut z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = HashMap::default();
@@ -1664,42 +1683,47 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             }
         }
 
-        // Group by z values - using set disjoint test to distinguish
-        for class_a in self.classes() {
-            let a = class_a.id;
-            if newpartmap.contains_key(&a) {
-                continue; // already processed
-            }
+        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
 
-            // TODO - improve performance of this code - lots of opportunities
-            let mut equivs = vec![a.clone()];
-            let mut extend_equivs = true;
-            let mut check_from = 0;
-            while extend_equivs {
-                let equivs_checked = equivs.len();
+        let mut uf = UnionFind::default();
+        let mut new_ids: HashMap<Id, Id> = HashMap::default();
+        let mut old_ids: HashMap<Id, Id> = HashMap::default();
+        for id1 in z.keys() {
+            new_ids.insert(id1.clone(), uf.make_set());
+            old_ids.insert(new_ids[id1], id1.clone());
+        }
 
-                for class_b in self.classes() {
-                    let b = class_b.id;
-                    extend_equivs = false;
-                    // Skip elements in the parition
-                    if equivs.contains(&b) || newpartmap.contains_key(&b) {
-                        continue;
-                    }
-
-                    // Test for intersection with any element of equivs
-                    for c in equivs[check_from..].iter() {
-                        if !z[c].is_disjoint(&z[&b]) {
-                            equivs.push(b.clone());
-                            extend_equivs = true;
-                            break;
-                        }
-                    }
-
-                    check_from = equivs_checked - 1;
+        for (id1, transitions1) in z.iter() {
+            let uf1 = uf.find(new_ids[id1]);
+            for (id2, transitions2) in z.iter() {
+                let uf2 = uf.find(new_ids[id2]);
+                // Already in the same partition - don't check again...
+                if uf1 == uf2 {
+                    continue;
+                }
+                if !transitions1.is_disjoint(transitions2) {
+                    // Union
+                    uf.union(uf1, uf2);
                 }
             }
-            for i in &equivs {
-                newpartmap.insert(i.clone(), equivs.clone());
+        }
+
+        for i in 0..uf.size() {
+            let root = uf.find(Id::from(i));
+            let root_old = old_ids[&root];
+            let i_old = old_ids[&Id::from(i)];
+            if newpartmap.contains_key(&root_old) {
+                newpartmap.get_mut(&root_old).unwrap().push(i_old);
+            } else {
+                newpartmap.insert(root_old, vec![i_old]);
+            }
+        }
+
+        let keys = newpartmap.keys().cloned().collect::<Vec<Id>>();
+        for id1 in keys {
+            let partition = newpartmap[&id1].clone();
+            for id2 in partition {
+                newpartmap.insert(id2.clone(), newpartmap[&id1].clone());
             }
         }
 
@@ -1707,6 +1731,9 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     /// Automata Minimization
+    /// Maps an e-class Id to a set of e-class Ids
+    /// partition : Id -> {Id}
+    /// initial_partition = x -> {y | y \in egraph_ids}}
     pub fn rebuild_definitions(&mut self) {
         let debug = true;
         if debug {
@@ -1744,7 +1771,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                         base_def = Some(j);
                     } else {
                         if debug {
-                            println!("Union Definitions {} and {}", j, base_def.unwrap());
+                            println!(
+                                "Union Definitions {:?} and {:?}",
+                                self[*j].nodes[0],
+                                self[*base_def.unwrap()].nodes[0]
+                            );
                         }
                         self.union_instantiations(
                             &self.id_to_pattern(*j, &Default::default()).0.ast,
@@ -1761,7 +1792,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                         base_rw = Some(j);
                     } else {
                         if debug {
-                            println!("Union Rewrites {} and {}", j, base_rw.unwrap());
+                            // println!("Union Rewrites {} and {}", j, base_rw.unwrap());
                         }
                         self.union_instantiations(
                             &self.id_to_pattern(*j, &Default::default()).0.ast,
