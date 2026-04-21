@@ -56,6 +56,20 @@ impl Machine {
                 Instruction::Bind { i, out, node } => {
                     let remaining_instructions = instructions.as_slice();
                     let eclass = &egraph[self.reg(*i)];
+
+                    // Follow a definitional edge and try to match all nodes in the
+                    // definitional e-class.
+                    let def_class = egraph.get_definition(eclass.id);
+                    if let Some(def_id) = def_class {
+                        let def_eclass = &egraph[*def_id];
+                        def_eclass.for_each_matching_node(node, |matched| {
+                            self.reg.truncate(out.0 as usize);
+                            matched.for_each(|id| self.reg.push(id));
+                            self.run(egraph, remaining_instructions, subst, yield_fn)
+                        })?;
+                    }
+
+                    // Now check for matches within the current e-class
                     return eclass.for_each_matching_node(node, |matched| {
                         self.reg.truncate(out.0 as usize);
                         matched.for_each(|id| self.reg.push(id));

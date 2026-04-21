@@ -12,6 +12,7 @@ define_language! {
     enum StreamLanguage {
         Num(i32),
         "Cons" = Cons([Id; 2]),
+        "Tail" = Tail([Id; 1]),
         "S" = Successor([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
@@ -125,6 +126,7 @@ fn make_rules() -> Vec<Rewrite> {
         rw!("add-zero"; "(+ ?a 0)" => "?a"),
         rw!("propagate-map"; "(Map ?func (Cons ?a ?b))" => "(Cons (App ?func ?a) (Map ?func ?b))"),
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
+        rw!("tail-cons"; "(Tail (Cons ?a ?b))" => "?b"),
     ]
 }
 
@@ -268,9 +270,9 @@ fn cocaml_map() {
 
     let map = runner
         .egraph
-        .add_expr(&format!("(Map incr {obs_expr})").parse().unwrap());
+        .add_expr(&format!("(Map incr alt)").parse().unwrap());
     runner = runner.run(&make_rules());
-    // runner.egraph.dot().to_dot("map.dot");
+    runner.egraph.dot().to_dot("dots/map.dot");
 
     // Check (map alt) = 2 :: 3 :: (map alt)
     assert_eq!(
@@ -643,8 +645,67 @@ fn chengs_example_slack_25_02_26() {
     assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
 }
 
-//
-// 1 -> [1, 3]
-// 2 -> [2, 4]
-// 3 -> [1, 3, 4]
-// 4 -> [2, 3, 4]
+#[test]
+fn chengs_example_slack_26_02_26() {
+    // x  := Cons(0, x1)
+    // z  := Cons(0, z1)
+    // x1 == x1 + x
+    // z1 == z1 + z
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 0 x1)".parse().unwrap());
+    let z = egraph.add_definition(&"z".parse().unwrap(), &"(Cons 0 z1)".parse().unwrap());
+    let x1 = egraph.add_expr(&"x1".parse().unwrap());
+    let z1 = egraph.add_expr(&"z1".parse().unwrap());
+    let x1_plus_x = egraph.add_expr(&"(+ x1 x)".parse().unwrap());
+    let z1_plus_z = egraph.add_expr(&"(+ z1 z)".parse().unwrap());
+    egraph.union(x1, x1_plus_x);
+    egraph.union(z1, z1_plus_z);
+    egraph.rebuild();
+    assert_eq!(egraph.find(x.0), egraph.find(z.0));
+}
+
+//----------------------------------------------------------------------------//
+// Rewriting over definitions
+//----------------------------------------------------------------------------//
+#[test]
+fn rewrite_over_definitions() {
+    // x := f(x)
+    // y := f(f(x))
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
+
+    let y = runner.egraph.add_expr(&"(g x)".parse().unwrap());
+
+    let rules: Vec<Rewrite> = vec![rw!(
+        "g-f-x";
+        "(g (f ?x))" => "(f ?x)"
+    )];
+    runner = runner.with_iter_limit(2).run(&rules);
+
+    assert_eq!(runner.egraph.find(x.1), runner.egraph.find(y));
+}
+
+#[test]
+fn x_equal_tail_x() -> Result<(), std::io::Error> {
+    // x := f(x)
+    // y := f(f(x))
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(Cons 0 x)".parse().unwrap());
+
+    let y = runner.egraph.add_expr(&"(Tail x)".parse().unwrap());
+
+    let rules = make_rules();
+    runner = runner.with_iter_limit(2).run(&rules);
+    runner.egraph.dot().to_dot("dots/tail_rewrite.dot")?;
+    runner
+        .egraph
+        .dot()
+        .automata_to_dot("dots/tail_rewrite_transition.dot")?;
+
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y));
+    Ok(())
+}

@@ -139,6 +139,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.definitions.iter()
     }
 
+    /// Returns an iterator over the definitions in the egraph.
+    pub fn get_definition(&self, id: Id) -> Option<&Id> {
+        self.definitions.get(&id)
+    }
+
     /// Returns an mutating iterator over the eclasses in the egraph.
     pub fn classes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut EClass<L, N::Data>> {
         self.classes.values_mut()
@@ -1735,7 +1740,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// partition : Id -> {Id}
     /// initial_partition = x -> {y | y \in egraph_ids}}
     pub fn rebuild_definitions(&mut self) {
-        let debug = true;
+        let debug = false;
         if debug {
             for class in self.classes() {
                 println!("{}->{:?}", class.id, class.nodes);
