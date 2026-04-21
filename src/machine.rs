@@ -86,7 +86,15 @@ impl Machine {
                     return Ok(());
                 }
                 Instruction::Compare { i, j } => {
-                    if egraph.find(self.reg(*i)) != egraph.find(self.reg(*j)) {
+                    let id_i = egraph.find(self.reg(*i));
+                    let id_j = egraph.find(self.reg(*j));
+
+                    // Check if they're equal or connected via definitional edge
+                    let are_equal = id_i == id_j
+                        || egraph.get_definition(id_i).map(|def| egraph.find(*def)) == Some(id_j)
+                        || egraph.get_definition(id_j).map(|def| egraph.find(*def)) == Some(id_i);
+
+                    if !are_equal {
                         return Ok(());
                     }
                 }

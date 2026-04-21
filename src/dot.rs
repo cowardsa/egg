@@ -189,38 +189,52 @@ where
 
         // define all the nodes, clustered by eclass
         for class in self.egraph.classes() {
-            writeln!(f, "    {}[label = \"e{}\"]", class.id, class.id)?;
-            for (i, node) in class.iter().enumerate() {
-                writeln!(f, "    {}.{}[label = \"{}\"]", class.id, i, node)?;
+            if self.egraph.get_definition(class.id).is_none() {
+                writeln!(f, "{}[label = \"e{}\"]", class.id, class.id)?;
+                continue;
             }
+            let mut label = String::default();
+            for node in class.leaves() {
+                if label.is_empty() {
+                    label.push_str(&format!("{}", node));
+                } else {
+                    label.push_str(&format!(",{}", node));
+                }
+            }
+            writeln!(
+                f,
+                "{}[label = \"{}\"; style = filled; fillcolor=lightblue]",
+                class.id, label
+            )?;
         }
 
         for class in self.egraph.classes() {
-            for (i_in_class, node) in class.iter().enumerate() {
-                writeln!(
-                    f,
-                    // {}.0 to pick an arbitrary node in the cluster
-                    "  {} -> {}.{}",
-                    class.id, class.id, i_in_class
-                )?;
-
+            for (i, node) in class.iter().enumerate() {
+                let mut child_count = 0;
+                let need_index = node.children().len() > 1;
                 node.try_for_each(|child: crate::Id| {
                     // write the edge to the child, but clip it to the eclass with lhead
                     let child_leader = self.egraph.find(child);
-
+                    let mut label = format!("{}", node);
+                    if class.nodes.len() > 1 {
+                        label.push_str(&format!("<sub>{}</sub>", i));
+                    }
+                    if need_index {
+                        label.push_str(&format!("({})", child_count));
+                    }
                     writeln!(
                         f,
-                        // {}.0 to pick an arbitrary node in the cluster
-                        "  {}.{} -> {}",
-                        class.id, i_in_class, child_leader
+                        "  {} -> {}[label = <{}>;]",
+                        class.id, child_leader, label
                     )?;
+                    child_count += 1;
                     Ok::<(), std::io::Error>(())
                 })?;
             }
         }
 
         for (var, def) in self.egraph.definitions() {
-            writeln!(f, "  {}.0 -> {} [color=blue, label=\"def\"]", var, def)?;
+            writeln!(f, "  {} -> {} [color=blue]", var, def)?;
         }
 
         write!(f, "}}")?;
@@ -287,6 +301,14 @@ where
                     Ok(())
                 })?;
             }
+        }
+
+        for (var, def) in self.egraph.definitions() {
+            writeln!(
+                f,
+                "  {}.0 -> {}.0 [color=blue, ltail=cluster_{}, lhead = cluster_{}]",
+                var, def, var, def
+            )?;
         }
 
         write!(f, "}}")

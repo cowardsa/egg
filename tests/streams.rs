@@ -12,11 +12,14 @@ define_language! {
     enum StreamLanguage {
         Num(i32),
         "Cons" = Cons([Id; 2]),
+        "Head" = Head([Id; 1]),
         "Tail" = Tail([Id; 1]),
         "S" = Successor([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
         "*" = Mul([Id; 2]),
+        "ite" = Ite([Id; 3]),
+        "!=" = Neq([Id; 2]),
         "f" = F([Id; 1]),
         "g" = G([Id; 1]),
         "h" = H([Id; 1]),
@@ -56,6 +59,18 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
                     None
                 }
             }
+            StreamLanguage::Mul([a, b]) => {
+                if x(a).is_some() && x(b).is_some() {
+                    Some((
+                        x(a).unwrap() * x(b).unwrap(),
+                        format!("(* {} {})", x(a).unwrap(), x(b).unwrap())
+                            .parse()
+                            .unwrap(),
+                    ))
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 
@@ -79,6 +94,7 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
         }
     }
 
+    // Need to call merge across definitions
     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
         let mut merge = merge_option(&mut to.constant, from.constant, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
@@ -127,9 +143,38 @@ fn make_rules() -> Vec<Rewrite> {
         rw!("propagate-map"; "(Map ?func (Cons ?a ?b))" => "(Cons (App ?func ?a) (Map ?func ?b))"),
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
         rw!("tail-cons"; "(Tail (Cons ?a ?b))" => "?b"),
+        rw!("add-cons"; "(+ ?a (Cons ?b ?c))" => "(Cons (+ (Head ?a) ?b) (+ (Tail ?a) ?c))"),
+        rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
+        rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
+        rw!("const-stream"; "(Cons ?a ?b)" => "?a" if is_const_stream("?b")),
+        rw!("neq-same"; "(!= ?a ?a)" => "false"),
+        rw!("ite-false"; "(ite false ?a ?b)" => "?b"),
     ]
 }
 
+// This returns a function that implements Condition
+fn is_const(var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    let var = var.parse().unwrap();
+    // note this check is just an example,
+    // checking for the absence of 0 is insufficient since 0 could be merged in later
+    // see https://github.com/egraphs-good/egg/issues/297
+    move |egraph, _, subst| {
+        let id = subst[var];
+        egraph[id].data.constant.is_some()
+    }
+}
+
+// This returns a function that implements Condition
+fn is_const_stream(var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    let var = var.parse().unwrap();
+    // note this check is just an example,
+    // checking for the absence of 0 is insufficient since 0 could be merged in later
+    // see https://github.com/egraphs-good/egg/issues/297
+    move |_, matched_id, subst| {
+        let id = subst[var];
+        matched_id == id
+    }
+}
 //----------------------------------------------------------------------------//
 // Basic Functionalities
 //----------------------------------------------------------------------------//
@@ -181,7 +226,7 @@ fn idempotent_function() -> Result<(), std::io::Error> {
 
     // runner.egraph.rebuild();
     runner = runner.with_iter_limit(2).run(&make_rules());
-    runner.egraph.dot().automata_to_dot("idempotent.dot")?;
+    runner.egraph.dot().automata_to_dot("dots/idempotent.dot")?;
     assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
 
     Ok(())
@@ -322,7 +367,7 @@ fn commutative() {
     let ids_ba = runner.egraph.add_definition(&ba, &bastream);
 
     runner = runner.run(&make_rules());
-    runner.egraph.dot().automata_to_dot("phil_example.dot");
+    runner.egraph.dot().automata_to_dot("dots/phil_example.dot");
     assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
 }
 
@@ -401,6 +446,8 @@ fn smt_successor() {
 // https://arxiv.org/abs/2511.20782
 //----------------------------------------------------------------------------//
 #[test]
+// We are unable to resolve this case because our analyses are unaware of the definitional edges
+// but also because we have no way of computing a fix-point of optimistic analyses
 fn russel_fig_2() {
     // Figure 2(a) Example - Goal:  show that x \in {1+5z | z \in Nat}
     // x = 1;
@@ -412,13 +459,16 @@ fn russel_fig_2() {
     // elements(x) = elements(cons(1, x + (1*5))) = {1} ∪ elements(x + (1*5)) = {1} ∪ (elements(x) + elements(1*5))
     // x := cons(1, 5 + x)
     let mut egraph = EGraph::default();
-    let _x = egraph.add_definition(&"x".parse().unwrap(), &"(Cons 1 (+ 5 x))".parse().unwrap());
+    let _x = egraph.add_definition(
+        &"x".parse().unwrap(),
+        &"(Cons 1 (+ (* 1 5) x))".parse().unwrap(),
+    );
 
     egraph.rebuild();
 }
 
 #[test]
-fn russel_fig_6() {
+fn russel_fig_6() -> Result<(), std::io::Error> {
     // Figure 6 Example - Goal: show that z == 42:
     // fn example1 ( y ) {
     //  let x = -6;
@@ -445,10 +495,26 @@ fn russel_fig_6() {
     // z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
     // Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
     // TODO
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let xt = runner
+        .egraph
+        .add_definition(&"xt".parse().unwrap(), &"(+ x 8)".parse().unwrap());
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(Cons -6 x)".parse().unwrap());
+
+    let z = runner.egraph.add_definition(
+        &"z".parse().unwrap(),
+        &"(Cons 42 (ite (!= xt 2) 24 z))".parse().unwrap(),
+    );
+
+    runner = runner.run(&make_rules());
+    runner.egraph.dot().to_dot("dots/russel_fig_6.dot")?;
+    Ok(())
 }
 
 #[test]
-fn russel_fig_7() {
+fn russel_fig_7() -> Result<(), std::io::Error> {
     // Figure 7 Example - Goal: show that x==y
     // fn example2 (x) {
     // let y = x ;
@@ -477,11 +543,11 @@ fn russel_fig_7() {
         &"(Cons x0 (* xt (+ y 5)))".parse().unwrap(),
     );
 
-    // Expect to fail
     egraph.rebuild();
-    // egraph.dot().automata_to_dot("russel_fig_7.dot");
+    egraph.dot().automata_to_dot("dots/russel_fig_7.dot")?;
 
     assert_eq!(egraph.find(x.0), egraph.find(y.0));
+    Ok(())
 }
 
 //----------------------------------------------------------------------------//
@@ -707,5 +773,25 @@ fn x_equal_tail_x() -> Result<(), std::io::Error> {
         .automata_to_dot("dots/tail_rewrite_transition.dot")?;
 
     assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y));
+    Ok(())
+}
+
+#[test]
+fn simple_lookthrough() -> Result<(), std::io::Error> {
+    // x := y
+    // x != y -> false
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
+
+    let y = runner.egraph.add_expr(&"(!= x y)".parse().unwrap());
+    let f = runner.egraph.add_expr(&"false".parse().unwrap());
+
+    let rules = make_rules();
+    runner = runner.with_iter_limit(2).run(&rules);
+    runner.egraph.dot().to_dot("dots/lookthrough.dot")?;
+
+    assert_eq!(runner.egraph.find(y), runner.egraph.find(f));
     Ok(())
 }
