@@ -1637,58 +1637,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
     }
 
-    /// A fast but conservative partition refinement that does not guarantee minimal partitions.
-    /*
-    fn refine_partition_fast(&mut self, partmap: &HashMap<Id, Vec<Id>>) -> HashMap<Id, Vec<Id>> {
-        // println!("Partmap {:?}", partmap);
-        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
-
-        // Create z mapping: state -> (head, tuple of partitions for args)
-        let z: HashMap<Id, (String, Vec<Vec<Id>>)> = self
-            .definitions
-            .iter()
-            .map(|(state, transition)| {
-                // Sort nodes according to discriminant - to ensure we have a canonical form
-                let mut nodes = self[self.find(*transition)].nodes.clone();
-                nodes.sort_by_key(|n| format!("{:?}", n.discriminant()));
-                let enode = nodes[0].clone();
-                // let enode = self.id_to_node(self.find(*transition));
-                println!("{} -> {:?}", transition, enode);
-                let partition_tuple: Vec<Vec<Id>> = enode
-                    .children()
-                    .iter()
-                    .map(|x| {
-                        partmap
-                            .get(x)
-                            .map(|partition| partition.clone())
-                            .unwrap_or_else(|| vec![x.clone()])
-                    })
-                    .collect();
-                // TODO: derive an integer from the enode that defines its type
-                (
-                    state.clone(),
-                    (format!("{:?}", enode.discriminant()), partition_tuple),
-                )
-            })
-            .collect();
-
-        // Group by z values
-        for (_, equivs) in self
-            .definitions
-            .keys()
-            .sorted_by(|a, b| Ord::cmp(&z[*a], &z[*b]))
-            .group_by(|state| z[*state].clone())
-            .into_iter()
-        {
-            let equivs: Vec<Id> = equivs.cloned().collect();
-            for i in &equivs {
-                newpartmap.insert(i.clone(), equivs.clone());
-            }
-        }
-        newpartmap
-    }
-    */
-
     // A complete partition refinement that guarantees minimal partitions.
     // refine_partition_minimal(partmap) -> newpartmap
     // egraph.find_cycles() -> {(id, node index) | node in e-class id is part of a cycle}
@@ -1849,7 +1797,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
 
         loop {
-            // let newpartmap = self.refine_partition_fast(&partmap);
             let newpartmap = self.refine_partition_minimal(&partmap, debug);
 
             // Check for convergence
