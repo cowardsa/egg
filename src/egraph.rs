@@ -61,6 +61,8 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     nodes: Vec<L>,
     // definitions
     definitions: HashMap<Id, Id>,
+    // Defined when we want to rebuild_definitions - on by default
+    rebuild_definitions: bool,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
     /// Enodes in the memo are canonicalized at each rebuild, but after rebuilding new
     /// unions can cause them to become out of date.
@@ -126,6 +128,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             memo: Default::default(),
             analysis_pending: Default::default(),
             classes_by_op: Default::default(),
+            rebuild_definitions: true,
         }
     }
 
@@ -219,6 +222,12 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             panic!("Need to set explanations enabled before adding any expressions to the egraph.");
         }
         self.explain = Some(Explain::new());
+        self
+    }
+
+    /// Disable transition minimization during rebuilding
+    pub fn disable_definition_rebuilding(mut self) -> Self {
+        self.rebuild_definitions = false;
         self
     }
 
@@ -660,6 +669,7 @@ where
                 .map(|(k, v)| (self.map_discriminant(k), v))
                 .collect(),
             clean: src_egraph.clean,
+            rebuild_definitions: src_egraph.rebuild_definitions,
         }
     }
 }
@@ -1569,11 +1579,12 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // Rebuild definitions - must call before processing unions - which propagates the congruence
         assert!(!self.check_circular_def());
 
-        self.rebuild_definitions();
+        if self.rebuild_definitions {
+            self.rebuild_definitions();
+        }
 
         let n_unions = self.process_unions();
         let trimmed_nodes = self.rebuild_classes();
-        let trimmed_nodes = 0;
 
         let elapsed = start.elapsed();
         info!(
