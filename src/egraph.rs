@@ -873,6 +873,101 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             return true;
         }
 
+        return self.check_bisimilar_internal(id1, id2, &mut vec![], &mut vec![], &mut vec![]);
+    }
+
+    fn check_bisimilar_internal(
+        &self,
+        id1: Id,
+        id2: Id,
+        visited: &mut Vec<(Id, Id)>,
+        left_productive: &mut Vec<bool>,
+        right_productive: &mut Vec<bool>,
+    ) -> bool {
+        // Trivially bisimilar
+        if self.find(id1) == self.find(id2) {
+            return true;
+        }
+
+        // Have found a cycle, check if it is productive on both left and right
+        if let Some(index) = visited.iter().position(|&x| x == (id1, id2)) {
+            if left_productive[index..].iter().any(|&b| b)
+                && right_productive[index..].iter().any(|&b| b)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        // Traverse matching e-class nodes
+        for node1 in &self.classes[&self.find(id1)].nodes {
+            for node2 in &self.classes[&self.find(id2)].nodes {
+                if node1.matches(node2) {
+                    let children1 = node1.children();
+                    let children2 = node2.children();
+                    if children1.len() != children2.len() {
+                        continue;
+                    }
+                    let mut visited_child = visited.clone();
+                    let mut left_productive_child = left_productive.clone();
+                    let mut right_productive_child = right_productive.clone();
+                    visited_child.push((id1, id2));
+                    left_productive_child.push(false);
+                    right_productive_child.push(false);
+                    let mut all_bisimilar = true;
+                    for (child1, child2) in children1.iter().zip(children2.iter()) {
+                        if !self.check_bisimilar_internal(
+                            *child1,
+                            *child2,
+                            &mut visited_child,
+                            &mut left_productive_child,
+                            &mut right_productive_child,
+                        ) {
+                            all_bisimilar = false;
+                            break;
+                        }
+                    }
+                    if all_bisimilar {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Traverse defintional edge on left
+        if let Some(def1) = self.definitions.get(&self.find(id1)) {
+            let mut visited_def = visited.clone();
+            let mut left_productive_def = left_productive.clone();
+            let mut right_productive_def = right_productive.clone();
+            visited_def.push((id1, id2));
+            left_productive_def.push(true);
+            right_productive_def.push(false);
+            return self.check_bisimilar_internal(
+                *def1,
+                id2,
+                &mut visited_def,
+                &mut left_productive_def,
+                &mut right_productive_def,
+            );
+        }
+
+        // Traverse defintional edge on right
+        if let Some(def2) = self.definitions.get(&self.find(id2)) {
+            let mut visited_def = visited.clone();
+            let mut left_productive_def = left_productive.clone();
+            let mut right_productive_def = right_productive.clone();
+            visited_def.push((id1, id2));
+            left_productive_def.push(false);
+            right_productive_def.push(true);
+            return self.check_bisimilar_internal(
+                id1,
+                *def2,
+                &mut visited_def,
+                &mut left_productive_def,
+                &mut right_productive_def,
+            );
+        }
+
         return false;
     }
 
