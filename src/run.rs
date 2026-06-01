@@ -464,6 +464,12 @@ where
         self
     }
 
+    /// Disable transition minimization during rebuilding
+    pub fn disable_definition_rebuilding(mut self) -> Self {
+        self.egraph = self.egraph.disable_definition_rebuilding();
+        self
+    }
+
     /// By default, egg runs a greedy algorithm to reduce the size of resulting explanations (without complexity overhead).
     /// Use this function to turn this algorithm off.
     pub fn without_explanation_length_optimization(mut self) -> Self {
