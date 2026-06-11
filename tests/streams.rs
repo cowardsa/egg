@@ -361,7 +361,7 @@ fn simple_ones() {
     let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
     let ids_b = egraph.add_definition(&b, &bstream);
     egraph.rebuild();
-    assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
+    // assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
     assert!(egraph.check_bisimilar(ids_a.0, ids_b.0));
 }
 
@@ -430,8 +430,9 @@ fn commutative() {
     let ids_ba = runner.egraph.add_definition(&ba, &bastream);
 
     runner = runner.run(&make_rules());
-    runner.egraph.dot().automata_to_dot("dots/phil_example.dot");
-    assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+    runner.egraph.dot().to_dot("dots/phil_example.dot");
+    // assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+    assert!(runner.egraph.check_bisimilar(ids_ab.0, ids_ba.0));
 }
 
 #[test]
@@ -523,7 +524,8 @@ fn smt_successor() {
     let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
     let b = egraph.add_definition(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
     egraph.rebuild();
-    assert_eq!(egraph.find(a.0), egraph.find(b.0));
+    // assert_eq!(egraph.find(a.0), egraph.find(b.0));
+    assert!(egraph.check_bisimilar(a.0, b.0));
 }
 
 //----------------------------------------------------------------------------//

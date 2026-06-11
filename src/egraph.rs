@@ -61,6 +61,7 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     nodes: Vec<L>,
     // definitions
     definitions: HashMap<Id, Id>,
+    productive: HashSet<L>,
     // Defined when we want to rebuild_definitions - on by default
     rebuild_definitions: bool,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
@@ -122,6 +123,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             unionfind: Default::default(),
             nodes: Default::default(),
             definitions: Default::default(),
+            productive: Default::default(),
             clean: false,
             explain: None,
             pending: Default::default(),
@@ -645,10 +647,12 @@ where
     /// Map an `EGraph` over `L` into an `EGraph` over `L2`.
     fn map_egraph(&self, src_egraph: EGraph<L, A>) -> EGraph<Self::L2, Self::A2> {
         let kv_map = |(k, v): (L, Id)| (self.map_node(k), v);
+        let k_map = |k: L| self.map_node(k);
         EGraph {
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
             definitions: src_egraph.definitions,
+            productive: src_egraph.productive.into_iter().map(k_map).collect(),
             unionfind: src_egraph.unionfind,
             memo: src_egraph.memo.into_iter().map(kv_map).collect(),
             pending: src_egraph.pending,
@@ -848,25 +852,24 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// [`add_definition`]: EGraph::add_definition()
     pub fn add_definition(&mut self, var_expr: &RecExpr<L>, def_expr: &RecExpr<L>) -> (Id, Id) {
-        let var_id = self.add_expr_uncanonical(var_expr);
-        let canon_var = self.find(var_id);
-        // TODO - implement a merge definitions routine!
-        assert!(!self.definitions.contains_key(&canon_var));
+        // Add variable to e-graph
+        let var_id = self.add_expr(var_expr);
+
         // Add definition to e-graph
         let definition_id = self.add_expr_uncanonical(def_expr);
         let canon_definition = self.find(definition_id);
+        let mut root_enode = self.id_to_node(canon_definition).clone();
 
-        // If a simple assignment to an already defined variable x := y
-        // add definitional edge to definition of y
-        if self.definitions.contains_key(&canon_definition) {
-            let new_def = self.definitions[&canon_definition];
-            let old_var: Option<Id> = self.definitions.insert(canon_var, new_def);
-            assert!(old_var.is_none());
-            return (canon_var, canon_definition);
-        }
+        // Merge canon_var and canon_definition
+        self.union(var_id, canon_definition);
+        self.rebuild();
 
-        let old_var: Option<Id> = self.definitions.insert(canon_var, canon_definition);
-        assert!(old_var.is_none());
+        let canon_var = self.find(var_id);
+        // Lookup the root enode of the definition and add it to productive HashSet
+        root_enode.update_children(|id| self.find(id));
+        println!("Added Def:{:?} = {:?}", var_expr, root_enode);
+        self.productive.insert(root_enode);
+
         (canon_var, canon_definition)
     }
 
@@ -877,12 +880,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         if canon_id1 == canon_id2 {
             return true;
         }
-        assert!(self.definitions.contains_key(&canon_id1));
-        assert!(self.definitions.contains_key(&canon_id2));
-        if self.find(self.definitions[&canon_id1]) == self.find(self.definitions[&canon_id2]) {
-            return true;
-        }
-
         return self.check_bisimilar_internal(id1, id2, &mut vec![], &mut vec![], &mut vec![]);
     }
 
@@ -925,8 +922,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 let mut left_productive_child = left_productive.clone();
                 let mut right_productive_child = right_productive.clone();
                 visited_child.push((id1, id2));
-                left_productive_child.push(false);
-                right_productive_child.push(false);
+                left_productive_child.push(self.productive.contains(node1));
+                right_productive_child.push(self.productive.contains(node2));
                 let mut all_bisimilar = true;
                 for (child1, child2) in children1.iter().zip(children2.iter()) {
                     if !self.check_bisimilar_internal(
@@ -944,40 +941,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     return true;
                 }
             }
-        }
-
-        // Traverse defintional edge on left
-        if let Some(def1) = self.definitions.get(&self.find(id1)) {
-            let mut visited_def = visited.clone();
-            let mut left_productive_def = left_productive.clone();
-            let mut right_productive_def = right_productive.clone();
-            visited_def.push((id1, id2));
-            left_productive_def.push(true);
-            right_productive_def.push(false);
-            return self.check_bisimilar_internal(
-                *def1,
-                id2,
-                &mut visited_def,
-                &mut left_productive_def,
-                &mut right_productive_def,
-            );
-        }
-
-        // Traverse defintional edge on right
-        if let Some(def2) = self.definitions.get(&self.find(id2)) {
-            let mut visited_def = visited.clone();
-            let mut left_productive_def = left_productive.clone();
-            let mut right_productive_def = right_productive.clone();
-            visited_def.push((id1, id2));
-            left_productive_def.push(false);
-            right_productive_def.push(true);
-            return self.check_bisimilar_internal(
-                id1,
-                *def2,
-                &mut visited_def,
-                &mut left_productive_def,
-                &mut right_productive_def,
-            );
         }
 
         return false;
@@ -1528,6 +1491,16 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 }
             }
         }
+
+        // Rebuild the productive set canonicalizing the children of each node in the productive set
+        let productive_nodes = std::mem::take(&mut self.productive);
+        let mut new_productive = HashSet::default();
+        for mut node in productive_nodes {
+            node.update_children(|id| self.find_mut(id));
+            new_productive.insert(node);
+        }
+
+        self.productive = new_productive;
 
         assert!(self.pending.is_empty());
         assert!(self.analysis_pending.is_empty());
