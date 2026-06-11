@@ -189,10 +189,6 @@ where
 
         // define all the nodes, clustered by eclass
         for class in self.egraph.classes() {
-            if self.egraph.get_definition(class.id).is_none() {
-                writeln!(f, "{}[label = \"e{}\"]", class.id, class.id)?;
-                continue;
-            }
             let mut label = String::default();
             for node in class.leaves() {
                 if label.is_empty() {
@@ -231,10 +227,6 @@ where
                     Ok::<(), std::io::Error>(())
                 })?;
             }
-        }
-
-        for (var, def) in self.egraph.definitions() {
-            writeln!(f, "  {} -> {} [color=blue]", var, def)?;
         }
 
         write!(f, "}}")?;
@@ -282,33 +274,36 @@ where
                     let (anchor, label) = self.edge(arg_i, node.len());
                     let child_leader = self.egraph.find(child);
 
+                    let mut arrow_color = String::default();
+                    if self.egraph.is_productive(node) {
+                        arrow_color = "color=lightgreen".into();
+                    }
                     if child_leader == class.id {
                         writeln!(
                             f,
                             // {}.0 to pick an arbitrary node in the cluster
-                            "  {}.{}{} -> {}.{}:n [lhead = cluster_{}, {}]",
-                            class.id, i_in_class, anchor, class.id, i_in_class, class.id, label
+                            "  {}.{}{} -> {}.{}:n [lhead = cluster_{}, {}{}]",
+                            class.id,
+                            i_in_class,
+                            anchor,
+                            class.id,
+                            i_in_class,
+                            class.id,
+                            label,
+                            arrow_color
                         )?;
                     } else {
                         writeln!(
                             f,
                             // {}.0 to pick an arbitrary node in the cluster
-                            "  {}.{}{} -> {}.0 [lhead = cluster_{}, {}]",
-                            class.id, i_in_class, anchor, child, child_leader, label
+                            "  {}.{}{} -> {}.0 [lhead = cluster_{}, {}{}]",
+                            class.id, i_in_class, anchor, child, child_leader, label, arrow_color
                         )?;
                     }
                     arg_i += 1;
                     Ok(())
                 })?;
             }
-        }
-
-        for (var, def) in self.egraph.definitions() {
-            writeln!(
-                f,
-                "  {}.0 -> {}.0 [color=blue, ltail=cluster_{}, lhead = cluster_{}]",
-                var, def, var, def
-            )?;
         }
 
         write!(f, "}}")

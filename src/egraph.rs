@@ -59,8 +59,7 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     unionfind: UnionFind,
     /// Stores the original node represented by each non-canonical id
     nodes: Vec<L>,
-    // definitions
-    definitions: HashMap<Id, Id>,
+    // Stores the productive nodes in the egraph
     productive: HashSet<L>,
     // Defined when we want to rebuild_definitions - on by default
     rebuild_definitions: bool,
@@ -122,7 +121,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             classes: Default::default(),
             unionfind: Default::default(),
             nodes: Default::default(),
-            definitions: Default::default(),
             productive: Default::default(),
             clean: false,
             explain: None,
@@ -137,16 +135,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Returns an iterator over the eclasses in the egraph.
     pub fn classes(&self) -> impl ExactSizeIterator<Item = &EClass<L, N::Data>> {
         self.classes.values()
-    }
-
-    /// Returns an iterator over the definitions in the egraph.
-    pub fn definitions(&self) -> impl ExactSizeIterator<Item = (&Id, &Id)> {
-        self.definitions.iter()
-    }
-
-    /// Returns an iterator over the definitions in the egraph.
-    pub fn get_definition(&self, id: Id) -> Option<&Id> {
-        self.definitions.get(&id)
     }
 
     /// Returns an mutating iterator over the eclasses in the egraph.
@@ -231,6 +219,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     pub fn disable_definition_rebuilding(mut self) -> Self {
         self.rebuild_definitions = false;
         self
+    }
+
+    /// Check productivity of a given node
+    pub fn is_productive(&self, node: &L) -> bool {
+        self.productive.contains(node)
     }
 
     /// By default, egg runs a greedy algorithm to reduce the size of resulting explanations (without complexity overhead).
@@ -651,7 +644,6 @@ where
         EGraph {
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
-            definitions: src_egraph.definitions,
             productive: src_egraph.productive.into_iter().map(k_map).collect(),
             unionfind: src_egraph.unionfind,
             memo: src_egraph.memo.into_iter().map(kv_map).collect(),
@@ -867,8 +859,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let canon_var = self.find(var_id);
         // Lookup the root enode of the definition and add it to productive HashSet
         root_enode.update_children(|id| self.find(id));
-        println!("Added Def:{:?} = {:?}", var_expr, root_enode);
-        self.productive.insert(root_enode);
+
+        // Only non-leaf nodes are productive
+        if root_enode.children().len() > 0 {
+            self.productive.insert(root_enode);
+        }
 
         (canon_var, canon_definition)
     }
@@ -1414,17 +1409,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             assert_eq!(ids.len(), unique.len());
         }
 
-        // Deduplicate definitions
-        let mut new_definitions = HashMap::default();
-        for (state, transition) in self.definitions.iter() {
-            if let Some(def) = new_definitions.get(&self.find(*state)) {
-                assert_eq!(self.find(*transition), *def);
-            }
-            new_definitions.insert(self.find(*state), self.find(*transition));
-        }
-
-        self.definitions = new_definitions.clone();
-
         self.classes_by_op = classes_by_op;
         trimmed
     }
@@ -1552,7 +1536,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let start = Instant::now();
 
         // Rebuild definitions - must call before processing unions - which propagates the congruence
-        assert!(!self.check_circular_def());
+        // assert!(!self.check_circular_def());
 
         if self.rebuild_definitions {
             self.rebuild_definitions();
@@ -1635,133 +1619,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         partmap: &HashMap<Id, Vec<Id>>,
         debug: bool,
     ) -> HashMap<Id, Vec<Id>> {
-        // Detect cycles in the e-graph
-        let mut cycles: HashSet<(Id, usize)> = Default::default();
-        self.find_cycles(|id, i| {
-            cycles.insert((id, i));
-        });
-
-        if debug {
-            println!("Partmap {:?}", partmap);
-        }
-
-        // Create z mapping: state -> (head, tuple of partitions for args)
-        let mut z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = HashMap::default();
-
-        // Construct transitions for each e-class, if f(e1) in e2 => e2 --f--> e1
-        for class in self.classes() {
-            let mut transitions = HashSet::default();
-            for (ind, enode) in class.nodes.iter().enumerate() {
-                if enode.is_leaf() {
-                    continue;
-                }
-
-                if cycles.contains(&(class.id, ind)) {
-                    // Skip cyclic transitions
-                    continue;
-                }
-                // println!("{} -> {:?}", transition, enode);
-                let partition_tuple: Vec<Vec<Id>> = enode
-                    .children()
-                    .iter()
-                    .map(|x| {
-                        partmap
-                            .get(x)
-                            .map(|partition| partition.clone())
-                            .unwrap_or_else(|| vec![x.clone()])
-                    })
-                    .collect();
-                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
-            }
-
-            // TODO: derive an integer from the enode that defines its type
-            z.insert(class.id, transitions.clone());
-        }
-
-        // Now add all the definitional transitions - which we just unfold as
-        // above but peeling off the first level of transition
-        // x := f(y) => x --f--> y
-        for (state, transition) in self.definitions.iter() {
-            let canon_transition = self.find(*transition);
-            let mut transitions = HashSet::default();
-
-            let state_id = self.find(*state);
-            if z.get(&state_id).is_some() {
-                transitions = z.get(&state_id).unwrap().clone();
-            }
-
-            for enode in self[canon_transition].nodes.iter() {
-                if enode.is_leaf() {
-                    continue;
-                }
-                // println!("{} -> {:?}", transition, enode);
-                let partition_tuple: Vec<Vec<Id>> = enode
-                    .children()
-                    .iter()
-                    .map(|x| {
-                        partmap
-                            .get(x)
-                            .map(|partition| partition.clone())
-                            .unwrap_or_else(|| vec![x.clone()])
-                    })
-                    .collect();
-                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
-            }
-
-            z.insert(state_id.clone(), transitions.clone());
-        }
-
-        if debug {
-            for (state, set) in z.iter() {
-                println!("Z[{state}]->{:?}", set);
-            }
-        }
-
-        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
-
-        let mut uf = UnionFind::default();
-        let mut new_ids: HashMap<Id, Id> = HashMap::default();
-        let mut old_ids: HashMap<Id, Id> = HashMap::default();
-        for id1 in z.keys() {
-            new_ids.insert(id1.clone(), uf.make_set());
-            old_ids.insert(new_ids[id1], id1.clone());
-        }
-
-        for (id1, transitions1) in z.iter() {
-            let uf1 = uf.find(new_ids[id1]);
-            for (id2, transitions2) in z.iter() {
-                let uf2 = uf.find(new_ids[id2]);
-                // Already in the same partition - don't check again...
-                if uf1 == uf2 {
-                    continue;
-                }
-                if !transitions1.is_disjoint(transitions2) {
-                    // Union
-                    uf.union(uf1, uf2);
-                }
-            }
-        }
-
-        for i in 0..uf.size() {
-            let root = uf.find(Id::from(i));
-            let root_old = old_ids[&root];
-            let i_old = old_ids[&Id::from(i)];
-            if newpartmap.contains_key(&root_old) {
-                newpartmap.get_mut(&root_old).unwrap().push(i_old);
-            } else {
-                newpartmap.insert(root_old, vec![i_old]);
-            }
-        }
-
-        let keys = newpartmap.keys().cloned().collect::<Vec<Id>>();
-        for id1 in keys {
-            let partition = newpartmap[&id1].clone();
-            for id2 in partition {
-                newpartmap.insert(id2.clone(), newpartmap[&id1].clone());
-            }
-        }
-
-        newpartmap
+        // TODO
+        partmap.clone()
     }
 
     /// Automata Minimization
@@ -1769,96 +1628,13 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// partition : Id -> {Id}
     /// initial_partition = x -> {y | y \in egraph_ids}}
     pub fn rebuild_definitions(&mut self) {
-        let debug = false;
-        if debug {
-            for class in self.classes() {
-                println!("{}->{:?}", class.id, class.nodes);
-            }
-        }
-        let observed: Vec<Id> = self.classes().map(|c| c.id).collect();
-        // Initial unrefined partition - all observed entities in one group
-        let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
-        for i in observed.iter() {
-            partmap.insert(i.clone(), observed.clone());
-        }
-
-        loop {
-            let newpartmap = self.refine_partition_minimal(&partmap, debug);
-
-            // Check for convergence
-            if newpartmap == partmap {
-                break;
-            }
-            partmap = newpartmap;
-        }
-
-        // Perform further refinement to avoid unioning x := def(x) cases...
-
-        for part in partmap.values() {
-            let mut base_def = None;
-            let mut base_rw = None;
-            for j in part.iter() {
-                // Only union definitions with definitions, and rewrites with rewrites
-                if self.definitions.contains_key(j) {
-                    if base_def.is_none() {
-                        base_def = Some(j);
-                    } else {
-                        if debug {
-                            println!(
-                                "Union Definitions {:?} and {:?}",
-                                self[*j].nodes[0],
-                                self[*base_def.unwrap()].nodes[0]
-                            );
-                        }
-                        self.union_instantiations(
-                            &self.id_to_pattern(*j, &Default::default()).0.ast,
-                            &self
-                                .id_to_pattern(*base_def.unwrap(), &Default::default())
-                                .0
-                                .ast,
-                            &Default::default(),
-                            "Automata Minimization",
-                        );
-                    }
-                } else {
-                    if base_rw.is_none() {
-                        base_rw = Some(j);
-                    } else {
-                        if debug {
-                            // println!("Union Rewrites {} and {}", j, base_rw.unwrap());
-                        }
-                        self.union_instantiations(
-                            &self.id_to_pattern(*j, &Default::default()).0.ast,
-                            &self
-                                .id_to_pattern(*base_rw.unwrap(), &Default::default())
-                                .0
-                                .ast,
-                            &Default::default(),
-                            "Automata Minimization",
-                        );
-                    }
-                }
-                // self.union(*j, part[0]);
-            }
-        }
+        // TODO
     }
 
     // Detect whether the definitions contain circularities
     fn check_circular_def(&self) -> bool {
-        for state in self.definitions.keys() {
-            let mut next_state = self.definitions.get(state).unwrap();
-            let mut visited: HashSet<&Id> = HashSet::from([state]);
-            // Follow definitions until we cycle or reach a terminal
-            while self.definitions.contains_key(next_state) {
-                if visited.contains(next_state) {
-                    println!("Circular definition detected at {}", next_state);
-                    return true;
-                }
-                visited.insert(next_state);
-                next_state = self.definitions.get(next_state).unwrap();
-            }
-        }
-        return false;
+        // TODO!
+        return true;
     }
 }
 
