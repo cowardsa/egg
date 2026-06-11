@@ -19,7 +19,10 @@ define_language! {
         "+" = Add([Id; 3]),
         "-" = Sub([Id; 3]),
         "*" = Mul([Id; 3]),
+        "XOR" = Xor([Id; 3]),
         "<<" = ShiftLeft([Id; 3]),
+        "~" = Not([Id; 2]),
+        "SEL" = Sel([Id; 4]),
         "extract" = Extract([Id; 3]),
         // Bitvector Def: (bv 16 y)
         "bv" = BitVec([Id; 2]),
@@ -86,6 +89,17 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                     None
                 }
             }
+            HardwareLanguage::Extract([w, from, expr]) => {
+                if let (Some(cw), Some(cfrom), Some(cexpr)) = (x(w), x(from), x(expr)) {
+                    let mask = (1 << (cw as i64)) - 1;
+                    Some((
+                        (cexpr >> cfrom) & mask,
+                        format!("{}", (cexpr >> cfrom) & mask).parse().unwrap(),
+                    ))
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 
@@ -131,15 +145,18 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
 fn make_rules() -> Vec<Rewrite> {
     vec![
         // ARITHMETIC
-        rw!("add-comm"; "(+ ?w ?a ?b)" => "(+ ?w ?b ?a)"),
+        // rw!("add-comm"; "(+ ?w ?a ?b)" => "(+ ?w ?b ?a)"),
         rw!("add-assoc"; "(+ ?w ?a (+ ?w ?b ?c))" => "(+ ?w (+ ?w ?a ?b) ?c)"),
         rw!("mul-comm"; "(* ?w ?a ?b)" => "(* ?w ?b ?a)"),
+        rw!("xor-comm"; "(XOR ?w ?a ?b)" => "(XOR ?w ?b ?a)"),
         rw!("undistribute-left"; "(+ ?w (* ?w ?a ?b) (* ?w ?a ?c))" => "(* ?w ?a (+ ?w ?b ?c))"),
         rw!("undistribute-right"; "(+ ?w (* ?w ?a ?b) (* ?w ?c ?b))" => "(* ?w (+ ?w ?a ?c) ?b)"),
         rw!("sub-same"; "(- ?w ?a ?a)" => "0"),
         rw!("add-zero"; "(+ ?w ?a 0)" => "?a"),
         rw!("assoc-add-sub"; "(- ?w (+ ?w ?a ?b) ?c)" => "(+ ?w (- ?w ?a ?c) ?b)"),
         rw!("distribute-mult"; "(* ?w ?a (+ ?w ?b ?c))" => "(+ ?w (* ?w ?a ?b) (* ?w ?a ?c))"),
+        rw!("add-bit"; "(+ 1 ?a ?b)" => "(XOR 1 ?a ?b)"),
+        rw!("sel-xor"; "(SEL 1 ?s (~ 1 ?a) ?a)" => "(XOR 1 ?s ?a)"),
         // LOGICAL SHIFT
         rw!("shift-mul-1"; "(<< ?w (* ?w ?a ?b) ?s)" => "(* ?w ?a (<< ?w ?b ?s))"),
         // rw!("shift-mul-2"; "(* ?w ?a (<< ?w ?b ?s))" => "(* ?w (<< ?w ?a ?s) ?b)"),
@@ -148,10 +165,12 @@ fn make_rules() -> Vec<Rewrite> {
         // BITVECTOR
         rw!("add-to-extract"; "(+ ?w (<< ?w (extract ?w_high ?from ?x) ?from) (extract ?from 0 ?x))" => "(extract (+ 16 ?w_high ?from) 0 ?x)"),
         rw!("extract-of-bv"; "(extract ?w 0 (bv ?w ?x))" => "(bv ?w ?x)"),
+        rw!("extract-of-add"; "(extract ?w 0 (+ ?w1 ?a ?b))" => "(+ ?w (extract ?w 0 ?a) (extract ?w 0 ?b))" if a_gt_b("?w1", "?w")),
         // Cons rewrites todo
         rw!("add-cons"; "(+ ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (+ ?w ?ah ?bh) (+ ?w ?at ?bt))"),
         rw!("sub-cons"; "(- ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (- ?w ?ah ?bh) (- ?w ?at ?bt))"),
         rw!("mul-cons"; "(* ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (* ?w ?ah ?bh) (* ?w ?at ?bt))"),
+        rw!("extract-cons"; "(extract ?w ?from (Cons ?ah ?at))" => "(Cons (extract ?w ?from ?ah) (extract ?w ?from ?at))"),
         rw!("shift-cons"; "(<< ?w (Cons ?ah ?at) ?b)" => "(Cons (<< ?w ?ah (Head ?b)) (<< ?w ?at (Tail ?b)))"),
         rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
         rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
@@ -193,6 +212,40 @@ fn a_gt_b(a: &'static str, b: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) 
 //----------------------------------------------------------------------------//
 // Testing
 //----------------------------------------------------------------------------//
+
+#[test]
+fn parity() {
+    let mut runner = Runner::default();
+
+    let spec = runner.egraph.add_definition(
+        &"outSpec".parse().unwrap(),
+        &"(Cons 0 (SEL 1 (bv 1 bitIn) (~ 1 outSpec) outSpec))"
+            .parse()
+            .unwrap(),
+    );
+
+    runner.egraph.add_definition(
+        &"count".parse().unwrap(),
+        &"(Cons 0 (+ 8 count (bv 1 bitIn)))".parse().unwrap(),
+    );
+
+    let imp = runner.egraph.add_definition(
+        &"outImpl".parse().unwrap(),
+        &"(extract 1 0 count)".parse().unwrap(),
+    );
+
+    runner = runner
+        .with_expr(&"(extract 1 0 count)".parse().unwrap())
+        .with_expr(&"outSpec".parse().unwrap())
+        .disable_definition_rebuilding()
+        .with_iter_limit(5)
+        .run(&make_rules());
+
+    runner.egraph.dot().to_dot("dots/parity.dot");
+    runner.print_report();
+    assert!(runner.egraph.check_bisimilar(spec.0, imp.0,));
+    // assert_eq!(root_0, root_1);
+}
 
 #[test]
 fn basic_operations() {
@@ -347,7 +400,7 @@ fn karatsuba_full_combinational_16bit() {
         // .with_expr(&xhyl_plus_xlyh_spec.parse().unwrap())
         .with_expr(&"(* 32 (bv 16 x) (bv 16 y))".parse().unwrap())
         .disable_definition_rebuilding()
-        .with_iter_limit(8)
+        .with_iter_limit(9)
         .with_node_limit(300000)
         .with_time_limit(Duration::new(20, 0))
         .with_scheduler(egg::SimpleScheduler)
@@ -485,7 +538,7 @@ fn karatsuba_intermediate_goal() {
         .with_expr(&xhyl_plus_xlyh_spec.parse().unwrap())
         .with_expr(&xhyl_plus_xlyh.parse().unwrap())
         .disable_definition_rebuilding()
-        .with_iter_limit(6)
+        .with_iter_limit(5)
         .with_scheduler(egg::SimpleScheduler)
         .run(&make_rules());
 

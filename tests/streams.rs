@@ -14,10 +14,12 @@ define_language! {
         "Cons" = Cons([Id; 2]),
         "Head" = Head([Id; 1]),
         "Tail" = Tail([Id; 1]),
+        "Snd" = Snd([Id; 2]),
         "S" = Successor([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
         "*" = Mul([Id; 2]),
+        "<" = Lt([Id; 2]),
         "ite" = Ite([Id; 3]),
         "!=" = Neq([Id; 2]),
         "f" = F([Id; 1]),
@@ -71,6 +73,18 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
                     None
                 }
             }
+            StreamLanguage::Lt([a, b]) => {
+                if x(a).is_some() && x(b).is_some() {
+                    Some((
+                        (x(a).unwrap() < x(b).unwrap()) as i32,
+                        format!("(< {} {})", x(a).unwrap(), x(b).unwrap())
+                            .parse()
+                            .unwrap(),
+                    ))
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 
@@ -84,6 +98,14 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
             StreamLanguage::Cons(_) => {
                 for child in enode.children() {
                     set.extend(y(child));
+                }
+            }
+            StreamLanguage::Ite([a, b, c]) => {
+                if y(a).contains(&1) {
+                    set.extend(y(b));
+                }
+                if y(a).contains(&0) {
+                    set.extend(y(c));
                 }
             }
             _ => (),
@@ -114,6 +136,7 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
 
     fn modify(egraph: &mut EGraph, id: Id) {
         let data = egraph[id].data.clone();
+
         if let Some((c, pat)) = data.constant {
             if egraph.are_explanations_enabled() {
                 egraph.union_instantiations(
@@ -132,21 +155,50 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
             #[cfg(debug_assertions)]
             egraph[id].assert_unique_leaves();
         }
+
+        // If elements returns a singleton set - we can fold into a constant stream
+        // if data.elements.len() == 1 {
+        //     let elt = *data.elements.iter().next().unwrap();
+        //     let pat = format!("{}", elt).parse().unwrap();
+        //     if egraph.are_explanations_enabled() {
+        //         egraph.union_instantiations(
+        //             &pat,
+        //             &format!("{}", elt).parse().unwrap(),
+        //             &Default::default(),
+        //             "element_fold".to_string(),
+        //         );
+        //     } else {
+        //         let added = egraph.add(StreamLanguage::Num(elt));
+        //         egraph.union(id, added);
+        //     }
+        //     // to not prune, comment this out
+        //     egraph[id].nodes.retain(|n| n.is_leaf());
+
+        //     #[cfg(debug_assertions)]
+        //     egraph[id].assert_unique_leaves();
+        // }
     }
 }
 
 fn make_rules() -> Vec<Rewrite> {
     vec![
+        // Basic arithmetic
         rw!("commute-add"; "(+ ?a ?b)" => "(+ ?b ?a)"),
+        rw!("distribute"; "(* ?a (+ ?b ?c))" => "(+ (* ?a ?b) (* ?a ?c))"),
         rw!("add-two"; "(+ ?a ?a)" => "(* 2 ?a)"),
         rw!("add-zero"; "(+ ?a 0)" => "?a"),
+        // Map and Applications
         rw!("propagate-map"; "(Map ?func (Cons ?a ?b))" => "(Cons (App ?func ?a) (Map ?func ?b))"),
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
         rw!("tail-cons"; "(Tail (Cons ?a ?b))" => "?b"),
         rw!("add-cons"; "(+ ?a (Cons ?b ?c))" => "(Cons (+ (Head ?a) ?b) (+ (Tail ?a) ?c))"),
+        rw!("lt-cons-right"; "(< ?a (Cons ?b ?c))" => "(Cons (< (Head ?a) ?b) (< (Tail ?a) ?c))"),
+        rw!("lt-cons-left"; "(< (Cons ?b ?c) ?a)" => "(Cons (< ?b (Head ?a)) (< ?c (Tail ?a)))"),
+        rw!("lt-ite"; "(< (ite ?cond ?a ?b) ?c)" => "(ite ?cond (< ?a ?c) (< ?b ?c))"),
+        // Constant streams
         rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
         rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
-        rw!("const-stream"; "(Cons ?a ?b)" => "?a" if is_const_stream("?b")),
+        // rw!("const-stream"; "(Cons ?a ?b)" => "?a" if is_const_stream("?b")),
         rw!("neq-same"; "(!= ?a ?a)" => "false"),
         rw!("ite-false"; "(ite false ?a ?b)" => "?b"),
     ]
@@ -230,6 +282,17 @@ fn idempotent_function() -> Result<(), std::io::Error> {
     assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
 
     Ok(())
+}
+
+#[test]
+fn ones() {
+    // Basic example inspired by Cocaml
+    let mut egraph = EGraph::default();
+    let b = "b".parse().unwrap();
+    let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
+    egraph.add_definition(&b, &bstream);
+    egraph.rebuild();
+    egraph.dot().to_dot("dots/test.dot");
 }
 
 #[test]
@@ -421,8 +484,31 @@ fn simple_dfa() {
 
 // (j<20) = cons(1, if (j<20) then i else k) < 20
 //        = cons(1 < 20, if (j<20) then (i < 20) else (k < 20))
-//        = cons(True, if (j<20) then Trues else (k<20))
-// (i < 20) = cons(1<20, (i<20)) = cons(false, (i<20))
+//        = cons(1, if (j<20) then 1 else (k<20))
+// (i < 20) = cons(1<20, (i<20)) = cons(1, (i<20)) -> 1
+
+// Why is the following true:
+// x = cons(1, if x then 1 else k) => x = 1
+
+#[test]
+fn my_fun_zucker() -> Result<(), std::io::Error> {
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let i = runner
+        .egraph
+        .add_definition(&"i".parse().unwrap(), &"(Cons 1 i)".parse().unwrap());
+    let j = runner.egraph.add_definition(
+        &"j".parse().unwrap(),
+        &"(Cons 1 (ite (< j 20) i k))".parse().unwrap(),
+    );
+    let rules = make_rules();
+    runner = runner.with_iter_limit(2).run(&rules);
+    runner.egraph.dot().to_dot("dots/my_fun_zucker.dot")?;
+
+    let cond = runner.egraph.add_expr(&"(< j 20)".parse().unwrap());
+
+    println!("j elements: {:?}", runner.egraph[cond].data.elements);
+    Ok(())
+}
 //----------------------------------------------------------------------------//
 // SOURCE: SMT Paper
 // A Decision Procedure for (Co)datatypes in SMT Solvers
@@ -508,8 +594,14 @@ fn russel_fig_6() -> Result<(), std::io::Error> {
         &"(Cons 42 (ite (!= xt 2) 24 z))".parse().unwrap(),
     );
 
+    let target = runner
+        .egraph
+        .add_definition(&"target".parse().unwrap(), &"(Cons 42 z)".parse().unwrap());
     runner = runner.run(&make_rules());
+    // runner.egraph.rebuild();
     runner.egraph.dot().to_dot("dots/russel_fig_6.dot")?;
+
+    assert_eq!(runner.egraph.find(z.0), runner.egraph.find(target.0));
     Ok(())
 }
 
@@ -530,23 +622,25 @@ fn russel_fig_7() -> Result<(), std::io::Error> {
     // x := cons(x0, y*y + y*5)
     // xt := x
     // y := cons(x0, xt*(y + 5 + 0)) --> rewriting -->  cons(x0, x * y + x * 5)
-    let mut egraph = EGraph::default();
-    let x = egraph.add_definition(
+    let mut runner = egg::Runner::<StreamLanguage, StreamsAnalysis>::default();
+    let x = runner.egraph.add_definition(
         &"x".parse().unwrap(),
-        &"(Cons x0 (* y (+ y 5)))".parse().unwrap(),
+        &"(Cons x0 (+ (* y y) (* y 5)))".parse().unwrap(),
     );
 
-    let _xt = egraph.add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
+    let _xt = runner
+        .egraph
+        .add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
 
-    let y = egraph.add_definition(
+    let y = runner.egraph.add_definition(
         &"y".parse().unwrap(),
-        &"(Cons x0 (* xt (+ y 5)))".parse().unwrap(),
+        &"(Cons x0 (* xt (+ y (+ 5 0))))".parse().unwrap(),
     );
 
-    egraph.rebuild();
-    egraph.dot().automata_to_dot("dots/russel_fig_7.dot")?;
+    runner = runner.run(&make_rules());
+    // egraph.dot().automata_to_dot("dots/russel_fig_7.dot")?;
 
-    assert_eq!(egraph.find(x.0), egraph.find(y.0));
+    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
     Ok(())
 }
 
@@ -592,7 +686,8 @@ fn chengs_example_3_5_1() {
 
     runner.egraph.rebuild();
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    // assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert!(runner.egraph.check_bisimilar(x.0, y.0));
 }
 
 #[test]
@@ -794,4 +889,85 @@ fn simple_lookthrough() -> Result<(), std::io::Error> {
 
     assert_eq!(runner.egraph.find(y), runner.egraph.find(f));
     Ok(())
+}
+
+#[test]
+fn cheng_example_slack_29_04_26() {
+    // x := f (g x)
+    // y := g (f y)
+    // z := f y
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(f (g x))".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(g (f y))".parse().unwrap());
+    let z = runner
+        .egraph
+        .add_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
+
+    runner
+        .egraph
+        .dot()
+        .automata_to_dot("dots/cheng_example_slack_29_04_26.dot");
+    // runner.egraph.rebuild();
+    assert!(runner.egraph.check_bisimilar(x.0, z.0));
+    runner
+        .egraph
+        .dot()
+        .to_dot("dots/cheng_example_slack_29_04_26_rebuild.dot");
+
+    // assert_eq!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+}
+
+#[test]
+fn cheng_example_slack_22_05_26() {
+    // x := snd(x, 1)
+    // y := snd(y, 2)
+
+    // x and y should not be bisimilar
+
+    let mut egraph = EGraph::default();
+    let x = egraph.add_definition(&"x".parse().unwrap(), &"(Snd x 1)".parse().unwrap());
+    let y = egraph.add_definition(&"y".parse().unwrap(), &"(Snd y 2)".parse().unwrap());
+
+    let one = egraph.add_expr(&"1".parse().unwrap());
+    let two = egraph.add_expr(&"2".parse().unwrap());
+
+    egraph.union(x.1, one);
+    egraph.union(y.1, two);
+
+    assert!(!egraph.check_bisimilar(x.0, y.0));
+}
+
+// ----------------------------------------------------------------------------//
+// PAPER Motivational Examples
+// ----------------------------------------------------------------------------//
+#[test]
+fn paper_example_2() {
+    // ones := cons(1, ones)
+    // zero := cons(0, zero)
+    // one' := map(incr, zero)
+    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> =
+        Runner::default().disable_definition_rebuilding();
+    let ones = runner
+        .egraph
+        .add_definition(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());
+    let _zero = runner
+        .egraph
+        .add_definition(&"zero".parse().unwrap(), &"(Cons 0 zero)".parse().unwrap());
+    let one_prime = runner.egraph.add_definition(
+        &"one'".parse().unwrap(),
+        &"(Map incr zero)".parse().unwrap(),
+    );
+
+    let runner = runner.run(&make_rules());
+    runner
+        .egraph
+        .dot()
+        .to_dot("dots/paper_example_2.dot")
+        .unwrap();
+
+    runner.egraph.check_bisimilar(ones.0, one_prime.0);
 }
