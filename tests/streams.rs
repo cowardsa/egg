@@ -249,7 +249,7 @@ fn trees() {
     );
     egraph.rebuild();
 
-    assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
+    assert_eq!(egraph.find(ids_a), egraph.find(ids_b));
 }
 
 #[test]
@@ -301,7 +301,7 @@ fn merged_observations() {
     let h = egraph.add_expr(&"w".parse().unwrap());
     egraph.union(fy, h);
     egraph.rebuild();
-    assert_eq!(egraph.find(x.0), egraph.find(y.0));
+    assert_eq!(egraph.find(x), egraph.find(y));
 }
 
 #[test]
@@ -367,8 +367,8 @@ fn simple_ones() {
     let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
     let ids_b = egraph.add_definition(&b, &bstream);
     egraph.rebuild();
-    // assert_eq!(egraph.find(ids_a.0), egraph.find(ids_b.0));
-    assert!(egraph.check_bisimilar(ids_a.0, ids_b.0));
+    // assert_eq!(egraph.find(ids_a), egraph.find(ids_b));
+    assert!(egraph.check_bisimilar(ids_a, ids_b));
 }
 
 #[test]
@@ -409,9 +409,9 @@ fn cocaml_elements() {
     egraph.rebuild();
 
     // Check (map alt) = 2 :: 3 :: (map alt)
-    assert_eq!(egraph[ones.1].data.elements, HashSet::from([1]));
+    assert_eq!(egraph[ones].data.elements, HashSet::from([1]));
 
-    assert_eq!(egraph[alt.1].data.elements, HashSet::from([1, 2]));
+    assert_eq!(egraph[alt].data.elements, HashSet::from([1, 2]));
 }
 
 //----------------------------------------------------------------------------//
@@ -467,8 +467,8 @@ fn simple_dfa() {
 
     egraph.rebuild();
 
-    assert_eq!(egraph.find(two.0), egraph.find(three.0));
-    assert_eq!(egraph.find(four.0), egraph.find(five.0));
+    assert_eq!(egraph.find(two), egraph.find(three));
+    assert_eq!(egraph.find(four), egraph.find(five));
 }
 
 // def myfun():
@@ -527,8 +527,8 @@ fn smt_successor() {
     let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
     let b = egraph.add_definition(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
     egraph.rebuild();
-    // assert_eq!(egraph.find(a.0), egraph.find(b.0));
-    assert!(egraph.check_bisimilar(a.0, b.0));
+    // assert_eq!(egraph.find(a), egraph.find(b));
+    assert!(egraph.check_bisimilar(a, b));
 }
 
 //----------------------------------------------------------------------------//
@@ -799,7 +799,7 @@ fn chengs_example_slack_26_02_26() {
     egraph.union(x1, x1_plus_x);
     egraph.union(z1, z1_plus_z);
     egraph.rebuild();
-    assert_eq!(egraph.find(x.0), egraph.find(z.0));
+    assert_eq!(egraph.find(x), egraph.find(z));
 }
 
 //----------------------------------------------------------------------------//
@@ -878,7 +878,7 @@ fn cheng_example_slack_29_04_26() {
         .with_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
 
     // runner.egraph.rebuild();
-    // assert_eq!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+    // assert_eq!(runner.egraph.find(x), runner.egraph.find(z));
     assert!(runner
         .egraph
         .check_bisimilar(runner.roots[0], runner.roots[2]));
@@ -898,10 +898,10 @@ fn cheng_example_slack_22_05_26() {
     let one = egraph.add_expr(&"1".parse().unwrap());
     let two = egraph.add_expr(&"2".parse().unwrap());
 
-    egraph.union(x.1, one);
-    egraph.union(y.1, two);
+    egraph.union(x, one);
+    egraph.union(y, two);
 
-    assert!(!egraph.check_bisimilar(x.0, y.0));
+    assert!(!egraph.check_bisimilar(x, y));
 }
 
 // ----------------------------------------------------------------------------//

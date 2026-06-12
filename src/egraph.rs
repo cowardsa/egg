@@ -843,7 +843,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     /// [`add_definition`]: EGraph::add_definition()
-    pub fn add_definition(&mut self, var_expr: &RecExpr<L>, def_expr: &RecExpr<L>) -> (Id, Id) {
+    pub fn add_definition(&mut self, var_expr: &RecExpr<L>, def_expr: &RecExpr<L>) -> Id {
         // Add variable to e-graph
         let var_id = self.add_expr(var_expr);
 
@@ -865,7 +865,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             self.productive.insert(root_enode);
         }
 
-        (canon_var, canon_definition)
+        canon_var
     }
 
     /// [`check_bisimilar`]: EGraph::check_bisimilar()

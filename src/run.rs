@@ -424,8 +424,7 @@ where
     /// Add a defintion to the egraph
     pub fn with_definition(mut self, name: &RecExpr<L>, expr: &RecExpr<L>) -> Self {
         let id = self.egraph.add_definition(name, expr);
-        assert!(self.egraph.find(id.0) == self.egraph.find(id.1));
-        self.roots.push(id.0);
+        self.roots.push(id);
         self
     }
 
