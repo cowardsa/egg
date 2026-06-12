@@ -1222,6 +1222,16 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let id1 = self.add_instantiation_noncanonical(from_pat, subst);
         let id2 = self.add_instantiation_noncanonical(to_pat, subst);
 
+        // Track productivity
+        let mut root_from = self.id_to_node(id1).clone();
+        root_from.update_children(|id| self.find(id));
+
+        if self.is_productive(&root_from) {
+            let root_to = self.id_to_node(id2).clone();
+
+            self.productive.insert(root_to);
+        }
+
         let did_union = self.perform_union(id1, id2, Some(Justification::Rule(rule_name.into())));
         (self.find(id1), did_union)
     }

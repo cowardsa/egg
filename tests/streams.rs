@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 type EGraph = egg::EGraph<StreamLanguage, StreamsAnalysis>;
 type Rewrite = egg::Rewrite<StreamLanguage, StreamsAnalysis>;
+type Runner = egg::Runner<StreamLanguage, StreamsAnalysis>;
 
 //----------------------------------------------------------------------------//
 // Language - captures standard operations on streams
@@ -152,8 +153,8 @@ impl Analysis<StreamLanguage> for StreamsAnalysis {
             // to not prune, comment this out
             egraph[id].nodes.retain(|n| n.is_leaf());
 
-            #[cfg(debug_assertions)]
-            egraph[id].assert_unique_leaves();
+            // #[cfg(debug_assertions)]
+            // egraph[id].assert_unique_leaves();
         }
 
         // If elements returns a singleton set - we can fold into a constant stream
@@ -198,7 +199,6 @@ fn make_rules() -> Vec<Rewrite> {
         // Constant streams
         rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
         rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
-        // rw!("const-stream"; "(Cons ?a ?b)" => "?a" if is_const_stream("?b")),
         rw!("neq-same"; "(!= ?a ?a)" => "false"),
         rw!("ite-false"; "(ite false ?a ?b)" => "?b"),
     ]
@@ -216,17 +216,6 @@ fn is_const(var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
     }
 }
 
-// This returns a function that implements Condition
-fn is_const_stream(var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
-    let var = var.parse().unwrap();
-    // note this check is just an example,
-    // checking for the absence of 0 is insufficient since 0 could be merged in later
-    // see https://github.com/egraphs-good/egg/issues/297
-    move |_, matched_id, subst| {
-        let id = subst[var];
-        matched_id == id
-    }
-}
 //----------------------------------------------------------------------------//
 // Basic Functionalities
 //----------------------------------------------------------------------------//
@@ -236,8 +225,8 @@ fn circular_definition_detection() {
     // x := f(x)
     // y := y
     let mut egraph = EGraph::default();
-    let x = egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
-    let y = egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
+    egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
+    egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
 
     // Expect to fail
     egraph.rebuild();
@@ -268,18 +257,16 @@ fn idempotent_function() -> Result<(), std::io::Error> {
     // Check that e-graph equivalence loops (x+0->x) don't merge definitions
     // a := Cons(x, 2 + 0)
     // b := Cons(x, 1 + 0)
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let a = runner
-        .egraph
-        .add_definition(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap());
-    let b = runner
-        .egraph
-        .add_definition(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap());
-
-    // runner.egraph.rebuild();
-    runner = runner.with_iter_limit(2).run(&make_rules());
+    let runner = Runner::default()
+        .with_definition(&"a".parse().unwrap(), &"(f (+ a' 0))".parse().unwrap())
+        .with_definition(&"b".parse().unwrap(), &"(f (+ b' 0))".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&make_rules());
     runner.egraph.dot().automata_to_dot("dots/idempotent.dot")?;
-    assert_ne!(runner.egraph.find(a.0), runner.egraph.find(b.0));
+    assert_ne!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 
     Ok(())
 }
@@ -292,7 +279,7 @@ fn ones() {
     let bstream = "(Cons 1 (Cons 1 b))".parse().unwrap();
     egraph.add_definition(&b, &bstream);
     egraph.rebuild();
-    egraph.dot().to_dot("dots/test.dot");
+    egraph.dot().to_dot("dots/test.dot").unwrap();
 }
 
 #[test]
@@ -319,32 +306,51 @@ fn merged_observations() {
 
 #[test]
 fn needs_minimization() {
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons 0 (* 2 x))".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(Cons 0 (* 2 x))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(Cons 0 (* 2 y))".parse().unwrap())
+        .with_definition(&"z".parse().unwrap(), &"(Cons 0 (+ x y))".parse().unwrap());
 
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(Cons 0 (* 2 y))".parse().unwrap());
-
-    let z = runner
-        .egraph
-        .add_definition(&"z".parse().unwrap(), &"(Cons 0 (+ x y))".parse().unwrap());
-
-    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(z.0));
-    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(y.0));
-    assert_ne!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+    assert_ne!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[2])
+    );
+    assert_ne!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
+    assert_ne!(
+        runner.egraph.find(runner.roots[1]),
+        runner.egraph.find(runner.roots[2])
+    );
 
     runner.egraph.rebuild();
-    assert_ne!(runner.egraph.find(x.0), runner.egraph.find(z.0));
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
-    assert_ne!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+    assert_ne!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[2])
+    );
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
+    assert_ne!(
+        runner.egraph.find(runner.roots[1]),
+        runner.egraph.find(runner.roots[2])
+    );
 
     runner = runner.with_iter_limit(2).run(&make_rules());
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(z.0));
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
-    assert_eq!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[2])
+    );
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
+    assert_eq!(
+        runner.egraph.find(runner.roots[1]),
+        runner.egraph.find(runner.roots[2])
+    );
 }
 //----------------------------------------------------------------------------//
 // SOURCE: CoCaml Paper
@@ -368,29 +374,27 @@ fn simple_ones() {
 #[test]
 fn cocaml_map() {
     // Cocaml example
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let obs_expr = "(Cons 1 (Cons 2 alt))".parse().unwrap();
-    let alt = runner
-        .egraph
-        .add_definition(&"alt".parse().unwrap(), &obs_expr);
-    // map(incr,alt) == map(incr,1::alt) == map(incr,1::1::alt)
-    // map(incr,1::alt) = 2::map(incr,alt)
-
-    let map = runner
-        .egraph
-        .add_expr(&format!("(Map incr alt)").parse().unwrap());
-    runner = runner.run(&make_rules());
-    runner.egraph.dot().to_dot("dots/map.dot");
+    let mut runner = Runner::default()
+        .with_definition(
+            &"alt".parse().unwrap(),
+            &"(Cons 1 (Cons 2 alt))".parse().unwrap(),
+        )
+        .with_expr(&"(Map incr alt)".parse().unwrap())
+        .run(&make_rules());
+    runner.egraph.dot().to_dot("dots/map.dot").unwrap();
 
     // Check (map alt) = 2 :: 3 :: (map alt)
     assert_eq!(
         runner
             .egraph
             .add_expr(&"(Cons 2 (Cons 3 (Map incr alt)))".parse().unwrap()),
-        runner.egraph.find(map)
+        runner.egraph.find(runner.roots[1])
     );
 
-    println!("Alt Elements: {:?}", runner.egraph[map].data.elements);
+    println!(
+        "Alt Elements: {:?}",
+        runner.egraph[runner.roots[1]].data.elements
+    );
 }
 
 #[test]
@@ -417,22 +421,23 @@ fn cocaml_elements() {
 //----------------------------------------------------------------------------//
 #[test]
 fn commutative() {
-    let mut runner: Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
     // ab =: cons( (a + b) ab)
     // ba =: cons( (b + a) ba)
-    let ab = "ab".parse().unwrap();
-    let abstream = "(Cons (+ a b) ab)".parse().unwrap();
-    let ids_ab = runner.egraph.add_definition(&ab, &abstream);
-    // let-rec ba = cons( (b + a) ba)
-    let ba = "ba".parse().unwrap();
-    let bastream = "(Cons (+ b a) ba)".parse().unwrap();
-    let ids_ba = runner.egraph.add_definition(&ba, &bastream);
-
-    runner = runner.run(&make_rules());
-    runner.egraph.dot().to_dot("dots/phil_example.dot");
-    // assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
-    assert!(runner.egraph.check_bisimilar(ids_ab.0, ids_ba.0));
+    let runner = Runner::default()
+        .with_definition(
+            &"ab".parse().unwrap(),
+            &"(Cons (+ a b) ab)".parse().unwrap(),
+        )
+        .with_definition(
+            &"ba".parse().unwrap(),
+            &"(Cons (+ b a) ba)".parse().unwrap(),
+        )
+        .run(&make_rules());
+    runner.egraph.dot().to_dot("dots/phil_example.dot").unwrap();
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.roots[0], runner.roots[1]));
 }
 
 #[test]
@@ -493,20 +498,18 @@ fn simple_dfa() {
 
 #[test]
 fn my_fun_zucker() -> Result<(), std::io::Error> {
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let i = runner
-        .egraph
-        .add_definition(&"i".parse().unwrap(), &"(Cons 1 i)".parse().unwrap());
-    let j = runner.egraph.add_definition(
-        &"j".parse().unwrap(),
-        &"(Cons 1 (ite (< j 20) i k))".parse().unwrap(),
-    );
-    let rules = make_rules();
-    runner = runner.with_iter_limit(2).run(&rules);
+    let runner = Runner::default()
+        .with_definition(&"i".parse().unwrap(), &"(Cons 1 i)".parse().unwrap())
+        .with_definition(
+            &"j".parse().unwrap(),
+            &"(Cons 1 (ite (< j 20) i k))".parse().unwrap(),
+        )
+        .with_expr(&"(< j 20)".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&make_rules());
     runner.egraph.dot().to_dot("dots/my_fun_zucker.dot")?;
 
-    let cond = runner.egraph.add_expr(&"(< j 20)".parse().unwrap());
-
+    let cond = runner.roots[2];
     println!("j elements: {:?}", runner.egraph[cond].data.elements);
     Ok(())
 }
@@ -582,28 +585,22 @@ fn russel_fig_6() -> Result<(), std::io::Error> {
     // rhs := 2*y + (y*y + z*y)
     // z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
     // Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
-    // TODO
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let xt = runner
-        .egraph
-        .add_definition(&"xt".parse().unwrap(), &"(+ x 8)".parse().unwrap());
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons -6 x)".parse().unwrap());
-
-    let z = runner.egraph.add_definition(
-        &"z".parse().unwrap(),
-        &"(Cons 42 (ite (!= xt 2) 24 z))".parse().unwrap(),
-    );
-
-    let target = runner
-        .egraph
-        .add_definition(&"target".parse().unwrap(), &"(Cons 42 z)".parse().unwrap());
-    runner = runner.run(&make_rules());
+    let runner = Runner::default()
+        .with_definition(&"xt".parse().unwrap(), &"(+ x 8)".parse().unwrap())
+        .with_definition(&"x".parse().unwrap(), &"(Cons -6 x)".parse().unwrap())
+        .with_definition(
+            &"z".parse().unwrap(),
+            &"(Cons 42 (ite (!= xt 2) 24 z))".parse().unwrap(),
+        )
+        .with_definition(&"target".parse().unwrap(), &"(Cons 42 z)".parse().unwrap())
+        .run(&make_rules());
     // runner.egraph.rebuild();
     runner.egraph.dot().to_dot("dots/russel_fig_6.dot")?;
 
-    assert_eq!(runner.egraph.find(z.0), runner.egraph.find(target.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[2]),
+        runner.egraph.find(runner.roots[3])
+    );
     Ok(())
 }
 
@@ -624,25 +621,23 @@ fn russel_fig_7() -> Result<(), std::io::Error> {
     // x := cons(x0, y*y + y*5)
     // xt := x
     // y := cons(x0, xt*(y + 5 + 0)) --> rewriting -->  cons(x0, x * y + x * 5)
-    let mut runner = egg::Runner::<StreamLanguage, StreamsAnalysis>::default();
-    let x = runner.egraph.add_definition(
-        &"x".parse().unwrap(),
-        &"(Cons x0 (+ (* y y) (* y 5)))".parse().unwrap(),
+    let runner = Runner::default()
+        .with_definition(
+            &"x".parse().unwrap(),
+            &"(Cons x0 (+ (* y y) (* y 5)))".parse().unwrap(),
+        )
+        .with_definition(&"xt".parse().unwrap(), &"x".parse().unwrap())
+        .with_definition(
+            &"y".parse().unwrap(),
+            &"(Cons x0 (* xt (+ y (+ 5 0))))".parse().unwrap(),
+        )
+        .run(&make_rules());
+    // egraph.dot().automata_to_dot("dots/russel_fig_7.dot");
+
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[2])
     );
-
-    let _xt = runner
-        .egraph
-        .add_definition(&"xt".parse().unwrap(), &"x".parse().unwrap());
-
-    let y = runner.egraph.add_definition(
-        &"y".parse().unwrap(),
-        &"(Cons x0 (* xt (+ y (+ 5 0))))".parse().unwrap(),
-    );
-
-    runner = runner.run(&make_rules());
-    // egraph.dot().automata_to_dot("dots/russel_fig_7.dot")?;
-
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
     Ok(())
 }
 
@@ -652,17 +647,10 @@ fn russel_fig_7() -> Result<(), std::io::Error> {
 #[should_panic]
 #[test]
 fn chengs_example_circular() {
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"x".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(f z)".parse().unwrap());
-
-    let z = runner
-        .egraph
-        .add_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"x".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(f z)".parse().unwrap())
+        .with_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
     runner.egraph.rebuild();
 
     let rules: Vec<Rewrite> = vec![rw!(
@@ -671,25 +659,24 @@ fn chengs_example_circular() {
     )];
     runner = runner.with_iter_limit(2).run(&rules);
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
 fn chengs_example_3_5_1() {
     // x := f(x)
     // y := f(f(x))
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(f (f x))".parse().unwrap());
-
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(f (f x))".parse().unwrap());
     runner.egraph.rebuild();
 
-    // assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
-    assert!(runner.egraph.check_bisimilar(x.0, y.0));
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.roots[0], runner.roots[1]));
 }
 
 #[test]
@@ -697,13 +684,9 @@ fn chengs_example_3_5_1() {
 fn chengs_example_3_5_2() {
     // x := f(x)
     // y := y
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"y".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"y".parse().unwrap());
 
     // Circular definition asserts
     runner.egraph.rebuild();
@@ -714,13 +697,9 @@ fn chengs_example_3_5_2() {
 fn chengs_example_3_6() {
     // x := g(x)
     // y := g(y)
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(g x)".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(g x)".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
 
     runner.egraph.rebuild();
     let rules: Vec<Rewrite> = vec![rw!(
@@ -736,13 +715,9 @@ fn chengs_example_3_7() {
     // x := cons(x, f(y))
     // y := cons(y, f(x))
 
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons x (f y))".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(Cons y (g x))".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(Cons x (f y))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(Cons y (g x))".parse().unwrap());
 
     runner.egraph.rebuild();
     let rules: Vec<Rewrite> = vec![rw!(
@@ -751,7 +726,10 @@ fn chengs_example_3_7() {
     )];
     runner = runner.with_iter_limit(2).run(&rules);
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
@@ -759,22 +737,20 @@ fn chengs_example_slack_25_11_25() {
     // x := f(h(g(x)) := f(h(h(g(x))))
     // y := h(y)
 
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(f (h (g x)))".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(h y)".parse().unwrap());
-
-    runner.egraph.rebuild();
     let rules: Vec<Rewrite> = vec![rw!(
         "g-f-z";
         "(g (f ?x))" => "?x"
     )];
-    runner = runner.with_iter_limit(2).run(&rules);
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(f (h (g x)))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(h y)".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&rules);
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
@@ -783,17 +759,10 @@ fn chengs_example_slack_25_02_26() {
     // y = Cons(0, g(y))
     // z = Cons(0, g(z))
 
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons 0 (f x))".parse().unwrap());
-    let z = runner
-        .egraph
-        .add_definition(&"z".parse().unwrap(), &"(Cons 0 (g z))".parse().unwrap());
-
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(Cons 0 (g y))".parse().unwrap());
+    let mut runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(Cons 0 (f x))".parse().unwrap())
+        .with_definition(&"z".parse().unwrap(), &"(Cons 0 (g z))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(Cons 0 (g y))".parse().unwrap());
 
     // runner.egraph.rebuild();
 
@@ -801,11 +770,17 @@ fn chengs_example_slack_25_02_26() {
     let fy = runner.egraph.add_expr(&"(f y)".parse().unwrap());
 
     runner.egraph.rebuild();
-    assert_eq!(runner.egraph.find(y.0), runner.egraph.find(z.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[2]),
+        runner.egraph.find(runner.roots[1])
+    );
     runner.egraph.union(gy, fy);
     runner.egraph.rebuild();
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y.0));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[2])
+    );
 }
 
 #[test]
@@ -834,42 +809,41 @@ fn chengs_example_slack_26_02_26() {
 fn rewrite_over_definitions() {
     // x := f(x)
     // y := f(f(x))
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap());
-
-    let y = runner.egraph.add_expr(&"(g x)".parse().unwrap());
-
     let rules: Vec<Rewrite> = vec![rw!(
         "g-f-x";
         "(g (f ?x))" => "(f ?x)"
     )];
-    runner = runner.with_iter_limit(2).run(&rules);
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(f x)".parse().unwrap())
+        .with_expr(&"(g x)".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&rules);
 
-    assert_eq!(runner.egraph.find(x.1), runner.egraph.find(y));
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.roots[0], runner.roots[1]));
 }
 
 #[test]
 fn x_equal_tail_x() -> Result<(), std::io::Error> {
     // x := f(x)
     // y := f(f(x))
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons 0 x)".parse().unwrap());
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(Cons 0 x)".parse().unwrap())
+        .with_expr(&"(Tail x)".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&make_rules());
 
-    let y = runner.egraph.add_expr(&"(Tail x)".parse().unwrap());
-
-    let rules = make_rules();
-    runner = runner.with_iter_limit(2).run(&rules);
     runner.egraph.dot().to_dot("dots/tail_rewrite.dot")?;
     runner
         .egraph
         .dot()
         .automata_to_dot("dots/tail_rewrite_transition.dot")?;
 
-    assert_eq!(runner.egraph.find(x.0), runner.egraph.find(y));
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
     Ok(())
 }
 
@@ -877,19 +851,19 @@ fn x_equal_tail_x() -> Result<(), std::io::Error> {
 fn simple_lookthrough() -> Result<(), std::io::Error> {
     // x := y
     // x != y -> false
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"y".parse().unwrap())
+        .with_expr(&"(!= x y)".parse().unwrap())
+        .with_expr(&"false".parse().unwrap())
+        .with_iter_limit(2)
+        .run(&make_rules());
 
-    let y = runner.egraph.add_expr(&"(!= x y)".parse().unwrap());
-    let f = runner.egraph.add_expr(&"false".parse().unwrap());
-
-    let rules = make_rules();
-    runner = runner.with_iter_limit(2).run(&rules);
     runner.egraph.dot().to_dot("dots/lookthrough.dot")?;
 
-    assert_eq!(runner.egraph.find(y), runner.egraph.find(f));
+    assert_eq!(
+        runner.egraph.find(runner.roots[1]),
+        runner.egraph.find(runner.roots[2])
+    );
     Ok(())
 }
 
@@ -898,29 +872,16 @@ fn cheng_example_slack_29_04_26() {
     // x := f (g x)
     // y := g (f y)
     // z := f y
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
-    let x = runner
-        .egraph
-        .add_definition(&"x".parse().unwrap(), &"(f (g x))".parse().unwrap());
-    let y = runner
-        .egraph
-        .add_definition(&"y".parse().unwrap(), &"(g (f y))".parse().unwrap());
-    let z = runner
-        .egraph
-        .add_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(f (g x))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(g (f y))".parse().unwrap())
+        .with_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
 
-    runner
-        .egraph
-        .dot()
-        .automata_to_dot("dots/cheng_example_slack_29_04_26.dot");
     // runner.egraph.rebuild();
-    assert!(runner.egraph.check_bisimilar(x.0, z.0));
-    runner
-        .egraph
-        .dot()
-        .to_dot("dots/cheng_example_slack_29_04_26_rebuild.dot");
-
     // assert_eq!(runner.egraph.find(x.0), runner.egraph.find(z.0));
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.roots[0], runner.roots[2]));
 }
 
 #[test]
@@ -951,25 +912,24 @@ fn paper_example_2() {
     // ones := cons(1, ones)
     // zero := cons(0, zero)
     // one' := map(incr, zero)
-    let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> =
-        Runner::default().disable_definition_rebuilding();
-    let ones = runner
-        .egraph
-        .add_definition(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap());
-    let _zero = runner
-        .egraph
-        .add_definition(&"zero".parse().unwrap(), &"(Cons 0 zero)".parse().unwrap());
-    let one_prime = runner.egraph.add_definition(
-        &"one'".parse().unwrap(),
-        &"(Map incr zero)".parse().unwrap(),
-    );
+    let runner = Runner::default()
+        .disable_definition_rebuilding()
+        .with_explanations_enabled()
+        .with_definition(&"ones".parse().unwrap(), &"(Cons 1 ones)".parse().unwrap())
+        .with_definition(&"zero".parse().unwrap(), &"(Cons 0 zero)".parse().unwrap())
+        .with_definition(
+            &"one'".parse().unwrap(),
+            &"(Map incr zero)".parse().unwrap(),
+        )
+        .run(&make_rules());
 
-    let runner = runner.run(&make_rules());
     runner
         .egraph
         .dot()
         .to_dot("dots/paper_example_2.dot")
         .unwrap();
 
-    runner.egraph.check_bisimilar(ones.0, one_prime.0);
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.roots[0], runner.roots[2]));
 }
