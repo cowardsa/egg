@@ -142,6 +142,9 @@ pub struct Runner<L: Language, N: Analysis<L>, IterData = ()> {
     /// The roots of expressions added by the
     /// [`with_expr`](Runner::with_expr()) method, in insertion order.
     pub roots: Vec<Id>,
+    /// The ids of definitions added by the
+    /// [`with_definition`](Runner::with_definition()) method, in insertion order.
+    pub defs: Vec<Id>,
     /// Why the `Runner` stopped. This will be `None` if it hasn't
     /// stopped yet.
     pub stop_reason: Option<StopReason>,
@@ -211,6 +214,7 @@ where
             egraph,
             iterations,
             roots,
+            defs,
             stop_reason,
             hooks,
             limits,
@@ -221,6 +225,7 @@ where
             .field("egraph", egraph)
             .field("iterations", iterations)
             .field("roots", roots)
+            .field("defs", defs)
             .field("stop_reason", stop_reason)
             .field("hooks", &vec![format_args!("<dyn FnMut ..>"); hooks.len()])
             .field("limits", limits)
@@ -346,6 +351,7 @@ where
             },
             egraph: EGraph::new(analysis),
             roots: vec![],
+            defs: vec![],
             iterations: vec![],
             stop_reason: None,
             hooks: vec![],
@@ -424,7 +430,7 @@ where
     /// Add a defintion to the egraph
     pub fn with_definition(mut self, name: &RecExpr<L>, expr: &RecExpr<L>) -> Self {
         let id = self.egraph.add_definition(name, expr);
-        self.roots.push(id);
+        self.defs.push(id);
         self
     }
 

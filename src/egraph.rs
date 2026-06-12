@@ -61,6 +61,8 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
     nodes: Vec<L>,
     // Stores the productive nodes in the egraph
     productive: HashSet<L>,
+    unproductive_defs: HashMap<L, L>,
+    defs: Vec<Id>,
     // Defined when we want to rebuild_definitions - on by default
     rebuild_definitions: bool,
     /// Stores each enode's `Id`, not the `Id` of the eclass.
@@ -122,6 +124,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             unionfind: Default::default(),
             nodes: Default::default(),
             productive: Default::default(),
+            defs: vec![],
+            unproductive_defs: Default::default(),
             clean: false,
             explain: None,
             pending: Default::default(),
@@ -645,9 +649,15 @@ where
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
             productive: src_egraph.productive.into_iter().map(k_map).collect(),
+            unproductive_defs: src_egraph
+                .unproductive_defs
+                .into_iter()
+                .map(|(k, v)| (self.map_node(k), self.map_node(v)))
+                .collect(),
             unionfind: src_egraph.unionfind,
             memo: src_egraph.memo.into_iter().map(kv_map).collect(),
             pending: src_egraph.pending,
+            defs: src_egraph.defs,
             nodes: src_egraph
                 .nodes
                 .into_iter()
@@ -854,7 +864,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         // Merge canon_var and canon_definition
         self.union(var_id, canon_definition);
-        self.rebuild();
 
         let canon_var = self.find(var_id);
         // Lookup the root enode of the definition and add it to productive HashSet
@@ -863,7 +872,24 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         // Only non-leaf nodes are productive
         if root_enode.children().len() > 0 {
             self.productive.insert(root_enode);
+        } else if var_expr.len() == 1 {
+            self.unproductive_defs
+                .insert(var_expr[Id::from(0)].clone(), root_enode);
+
+            // Detect circular definition
+            let mut next_node = var_expr[Id::from(0)].clone();
+            while self.unproductive_defs.contains_key(&next_node) {
+                next_node = self.unproductive_defs.get(&next_node).unwrap().clone();
+                assert!(
+                    next_node != var_expr[Id::from(0)],
+                    "Circular definition detected for variable {:?} and definition {:?}",
+                    var_expr[Id::from(0)],
+                    def_expr
+                );
+            }
         }
+
+        self.defs.push(canon_var);
 
         canon_var
     }
@@ -1546,7 +1572,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let start = Instant::now();
 
         // Rebuild definitions - must call before processing unions - which propagates the congruence
-        // assert!(!self.check_circular_def());
+        assert!(!self.detect_circular_def());
 
         if self.rebuild_definitions {
             self.rebuild_definitions();
@@ -1592,27 +1618,92 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             Gray,
             Black,
         }
-        type Enter = bool;
+
+        enum Frame {
+            Enter(Id),
+            Node {
+                id: Id,
+                node_idx: usize,
+                child_idx: usize,
+            },
+            Exit(Id),
+        }
 
         let mut color: HashMap<Id, Color> = self.classes().map(|c| (c.id, Color::White)).collect();
-        let mut stack: Vec<(Enter, Id)> = self.classes().map(|c| (true, c.id)).collect();
+        let mut stack: Vec<Frame> = self.classes().map(|c| Frame::Enter(c.id)).collect();
+        let mut path: Vec<(Id, usize, bool)> = Vec::new();
 
-        while let Some((enter, id)) = stack.pop() {
-            if enter {
-                *color.get_mut(&id).unwrap() = Color::Gray;
-                stack.push((false, id));
-                for (i, node) in self[id].iter().enumerate() {
-                    for child in node.children() {
-                        let canon_child = self.find(*child);
-                        match &color[&canon_child] {
-                            Color::White => stack.push((true, canon_child)),
-                            Color::Gray => f(id, i),
-                            Color::Black => (),
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Enter(id) => {
+                    if let Color::White = color[&id] {
+                        *color.get_mut(&id).unwrap() = Color::Gray;
+                        stack.push(Frame::Exit(id));
+                        let class = &self[id];
+                        for node_idx in (0..class.nodes.len()).rev() {
+                            stack.push(Frame::Node {
+                                id,
+                                node_idx,
+                                child_idx: 0,
+                            });
                         }
                     }
                 }
-            } else {
-                *color.get_mut(&id).unwrap() = Color::Black;
+                Frame::Node {
+                    id,
+                    node_idx,
+                    child_idx,
+                } => {
+                    let class = &self[id];
+                    let node = &class.nodes[node_idx];
+                    if child_idx == 0 {
+                        path.push((id, node_idx, self.productive.contains(node)));
+                    }
+
+                    let children = node.children();
+                    if child_idx < children.len() {
+                        let child = self.find(children[child_idx]);
+                        match &color[&child] {
+                            Color::White => {
+                                stack.push(Frame::Node {
+                                    id,
+                                    node_idx,
+                                    child_idx: child_idx + 1,
+                                });
+                                stack.push(Frame::Enter(child));
+                            }
+                            Color::Gray => {
+                                let mut productive_cycle = false;
+                                for (path_id, _path_node_idx, productive) in path.iter().rev() {
+                                    productive_cycle |= *productive;
+                                    if *path_id == child {
+                                        break;
+                                    }
+                                }
+                                if !productive_cycle {
+                                    f(id, node_idx);
+                                }
+                                stack.push(Frame::Node {
+                                    id,
+                                    node_idx,
+                                    child_idx: child_idx + 1,
+                                });
+                            }
+                            Color::Black => {
+                                stack.push(Frame::Node {
+                                    id,
+                                    node_idx,
+                                    child_idx: child_idx + 1,
+                                });
+                            }
+                        }
+                    } else {
+                        path.pop();
+                    }
+                }
+                Frame::Exit(id) => {
+                    *color.get_mut(&id).unwrap() = Color::Black;
+                }
             }
         }
     }
@@ -1627,10 +1718,93 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         &mut self,
         // TODO - partmap should map to a hashset - why do we need order?
         partmap: &HashMap<Id, Vec<Id>>,
+        unproductive_cycles: &HashSet<(Id, usize)>,
         debug: bool,
     ) -> HashMap<Id, Vec<Id>> {
-        // TODO
-        partmap.clone()
+        // Create z mapping: state -> (head, tuple of partitions for args)
+        let mut z: HashMap<Id, HashSet<(String, Vec<Vec<Id>>)>> = HashMap::default();
+
+        // Construct transitions for each e-class, if f(e1) in e2 => e2 --f--> e1
+        for class in self.classes() {
+            let mut transitions = HashSet::default();
+            for (ind, enode) in class.nodes.iter().enumerate() {
+                if enode.is_leaf() {
+                    continue;
+                }
+
+                if unproductive_cycles.contains(&(class.id, ind)) {
+                    // Skip unproductive cyclic transitions
+                    continue;
+                }
+
+                let partition_tuple: Vec<Vec<Id>> = enode
+                    .children()
+                    .iter()
+                    .map(|x| {
+                        partmap
+                            .get(x)
+                            .map(|partition| partition.clone())
+                            .unwrap_or_else(|| vec![x.clone()])
+                    })
+                    .collect();
+                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
+            }
+
+            // TODO: derive an integer from the enode that defines its type
+            z.insert(class.id, transitions.clone());
+        }
+
+        if debug {
+            for (state, set) in z.iter() {
+                println!("Z[{state}]->{:?}", set);
+            }
+        }
+
+        let mut newpartmap: HashMap<Id, Vec<Id>> = HashMap::default();
+
+        let mut uf = UnionFind::default();
+        let mut new_ids: HashMap<Id, Id> = HashMap::default();
+        let mut old_ids: HashMap<Id, Id> = HashMap::default();
+        for id1 in z.keys() {
+            new_ids.insert(id1.clone(), uf.make_set());
+            old_ids.insert(new_ids[id1], id1.clone());
+        }
+
+        for (id1, transitions1) in z.iter() {
+            let uf1 = uf.find(new_ids[id1]);
+            for (id2, transitions2) in z.iter() {
+                let uf2 = uf.find(new_ids[id2]);
+                // Already in the same partition - don't check again...
+                if uf1 == uf2 {
+                    continue;
+                }
+                if !transitions1.is_disjoint(transitions2) {
+                    // Union
+                    uf.union(uf1, uf2);
+                }
+            }
+        }
+
+        for i in 0..uf.size() {
+            let root = uf.find(Id::from(i));
+            let root_old = old_ids[&root];
+            let i_old = old_ids[&Id::from(i)];
+            if newpartmap.contains_key(&root_old) {
+                newpartmap.get_mut(&root_old).unwrap().push(i_old);
+            } else {
+                newpartmap.insert(root_old, vec![i_old]);
+            }
+        }
+
+        let keys = newpartmap.keys().cloned().collect::<Vec<Id>>();
+        for id1 in keys {
+            let partition = newpartmap[&id1].clone();
+            for id2 in partition {
+                newpartmap.insert(id2.clone(), newpartmap[&id1].clone());
+            }
+        }
+
+        newpartmap
     }
 
     /// Automata Minimization
@@ -1638,13 +1812,52 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// partition : Id -> {Id}
     /// initial_partition = x -> {y | y \in egraph_ids}}
     pub fn rebuild_definitions(&mut self) {
-        // TODO
+        let debug = false;
+
+        // Detect unproductive cycles that need to removed before partition refinement.
+        let mut unproductive_cycles: HashSet<(Id, usize)> = Default::default();
+        self.find_cycles(|id, i| {
+            unproductive_cycles.insert((id, i));
+        });
+
+        // Initial unrefined partition - all observed entities in one group
+        let observed: Vec<Id> = self.classes().map(|c| c.id).collect();
+        let mut partmap: HashMap<Id, Vec<Id>> = HashMap::default();
+        for i in observed.iter() {
+            partmap.insert(i.clone(), observed.clone());
+        }
+
+        loop {
+            let newpartmap = self.refine_partition_minimal(&partmap, &unproductive_cycles, debug);
+
+            // Check for convergence
+            if newpartmap == partmap {
+                break;
+            }
+            partmap = newpartmap;
+        }
+
+        // Merge all classes in the same partition
+        for part in partmap.values() {
+            for j in part.iter() {
+                if *j == part[0] {
+                    continue;
+                }
+                self.union_instantiations(
+                    &self.id_to_pattern(*j, &Default::default()).0.ast,
+                    &self.id_to_pattern(part[0], &Default::default()).0.ast,
+                    &Default::default(),
+                    "Automata Minimization",
+                );
+            }
+        }
     }
 
     // Detect whether the definitions contain circularities
-    fn check_circular_def(&self) -> bool {
+    fn detect_circular_def(&self) -> bool {
         // TODO!
-        return true;
+
+        return false;
     }
 }
 

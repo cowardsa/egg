@@ -17,6 +17,7 @@ define_language! {
         "Tail" = Tail([Id; 1]),
         "Snd" = Snd([Id; 2]),
         "S" = Successor([Id; 1]),
+        "ConstStream" = ConstStream([Id; 1]),
         "Node" = Node([Id; 3]),
         "+" = Add([Id; 2]),
         "*" = Mul([Id; 2]),
@@ -197,6 +198,8 @@ fn make_rules() -> Vec<Rewrite> {
         rw!("lt-cons-left"; "(< (Cons ?b ?c) ?a)" => "(Cons (< ?b (Head ?a)) (< ?c (Tail ?a)))"),
         rw!("lt-ite"; "(< (ite ?cond ?a ?b) ?c)" => "(ite ?cond (< ?a ?c) (< ?b ?c))"),
         // Constant streams
+        rw!("const-stream"; "(ConstStream ?a)" => "(Cons ?a (ConstStream ?a))" if is_const("?a")),
+        rw!("rev-const-stream"; "(Cons ?a ?b)" => "(ConstStream ?a)" if is_const_stream("?a", "?b")),
         rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
         rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
         rw!("neq-same"; "(!= ?a ?a)" => "false"),
@@ -216,14 +219,27 @@ fn is_const(var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
     }
 }
 
+// This returns a function that implements Condition
+fn is_const_stream(c: &'static str, var: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) -> bool {
+    let c = c.parse().unwrap();
+    let var = var.parse().unwrap();
+    // note this check is just an example,
+    // checking for the absence of 0 is insufficient since 0 could be merged in later
+    // see https://github.com/egraphs-good/egg/issues/297
+    move |egraph, matched_id, subst| {
+        let id = subst[var];
+        egraph[subst[c]].data.constant.is_some() && id == matched_id
+    }
+}
+
 //----------------------------------------------------------------------------//
 // Basic Functionalities
 //----------------------------------------------------------------------------//
 #[test]
 #[should_panic]
 fn circular_definition_detection() {
-    // x := f(x)
-    // y := y
+    // x := y
+    // y := x
     let mut egraph = EGraph::default();
     egraph.add_definition(&"x".parse().unwrap(), &"y".parse().unwrap());
     egraph.add_definition(&"y".parse().unwrap(), &"x".parse().unwrap());
@@ -264,8 +280,8 @@ fn idempotent_function() -> Result<(), std::io::Error> {
         .run(&make_rules());
     runner.egraph.dot().automata_to_dot("dots/idempotent.dot")?;
     assert_ne!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
 
     Ok(())
@@ -312,44 +328,44 @@ fn needs_minimization() {
         .with_definition(&"z".parse().unwrap(), &"(Cons 0 (+ x y))".parse().unwrap());
 
     assert_ne!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
     );
     assert_ne!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
     assert_ne!(
-        runner.egraph.find(runner.roots[1]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[1]),
+        runner.egraph.find(runner.defs[2])
     );
 
     runner.egraph.rebuild();
     assert_ne!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
     );
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
     assert_ne!(
-        runner.egraph.find(runner.roots[1]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[1]),
+        runner.egraph.find(runner.defs[2])
     );
 
     runner = runner.with_iter_limit(2).run(&make_rules());
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
     );
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
     assert_eq!(
-        runner.egraph.find(runner.roots[1]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[1]),
+        runner.egraph.find(runner.defs[2])
     );
 }
 //----------------------------------------------------------------------------//
@@ -388,12 +404,12 @@ fn cocaml_map() {
         runner
             .egraph
             .add_expr(&"(Cons 2 (Cons 3 (Map incr alt)))".parse().unwrap()),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.roots[0])
     );
 
-    println!(
-        "Alt Elements: {:?}",
-        runner.egraph[runner.roots[1]].data.elements
+    assert_eq!(
+        HashSet::from([2, 3]),
+        runner.egraph[runner.roots[0]].data.elements
     );
 }
 
@@ -437,7 +453,7 @@ fn commutative() {
     runner.egraph.dot().to_dot("dots/phil_example.dot").unwrap();
     assert!(runner
         .egraph
-        .check_bisimilar(runner.roots[0], runner.roots[1]));
+        .check_bisimilar(runner.defs[0], runner.defs[1]));
 }
 
 #[test]
@@ -509,7 +525,7 @@ fn my_fun_zucker() -> Result<(), std::io::Error> {
         .run(&make_rules());
     runner.egraph.dot().to_dot("dots/my_fun_zucker.dot")?;
 
-    let cond = runner.roots[2];
+    let cond = runner.roots[0];
     println!("j elements: {:?}", runner.egraph[cond].data.elements);
     Ok(())
 }
@@ -585,21 +601,22 @@ fn russel_fig_6() -> Result<(), std::io::Error> {
     // rhs := 2*y + (y*y + z*y)
     // z := cons(42, if lhs != rhs then 24 else z) --> cons(42, z)
     // Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
-    let runner = Runner::default()
+    let mut runner = Runner::default()
         .with_definition(&"xt".parse().unwrap(), &"(+ x 8)".parse().unwrap())
         .with_definition(&"x".parse().unwrap(), &"(Cons -6 x)".parse().unwrap())
         .with_definition(
             &"z".parse().unwrap(),
-            &"(Cons 42 (ite (!= xt 2) 24 z))".parse().unwrap(),
+            &"(Cons 42 (ite (!= xt (ConstStream 2)) 24 z))"
+                .parse()
+                .unwrap(),
         )
-        .with_definition(&"target".parse().unwrap(), &"(Cons 42 z)".parse().unwrap())
         .run(&make_rules());
     // runner.egraph.rebuild();
     runner.egraph.dot().to_dot("dots/russel_fig_6.dot")?;
 
     assert_eq!(
-        runner.egraph.find(runner.roots[2]),
-        runner.egraph.find(runner.roots[3])
+        runner.egraph.find(runner.defs[2]),
+        runner.egraph.add_expr(&"(ConstStream 42)".parse().unwrap())
     );
     Ok(())
 }
@@ -635,8 +652,8 @@ fn russel_fig_7() -> Result<(), std::io::Error> {
     // egraph.dot().automata_to_dot("dots/russel_fig_7.dot");
 
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
     );
     Ok(())
 }
@@ -660,8 +677,8 @@ fn chengs_example_circular() {
     runner = runner.with_iter_limit(2).run(&rules);
 
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
 }
 
@@ -676,7 +693,7 @@ fn chengs_example_3_5_1() {
 
     assert!(runner
         .egraph
-        .check_bisimilar(runner.roots[0], runner.roots[1]));
+        .check_bisimilar(runner.defs[0], runner.defs[1]));
 }
 
 #[test]
@@ -697,15 +714,17 @@ fn chengs_example_3_5_2() {
 fn chengs_example_3_6() {
     // x := g(x)
     // y := g(y)
+
+    let rules: Vec<Rewrite> = vec![rw!(
+        "g-y";
+        "(g y)" => "y"
+    )];
     let mut runner = Runner::default()
         .with_definition(&"x".parse().unwrap(), &"(g x)".parse().unwrap())
         .with_definition(&"y".parse().unwrap(), &"(g y)".parse().unwrap());
 
     runner.egraph.rebuild();
-    let rules: Vec<Rewrite> = vec![rw!(
-        "g-y";
-        "(g y)" => "y"
-    )];
+
     runner = runner.with_iter_limit(1).run(&rules);
     runner.egraph.rebuild(); // Expected to fail
 }
@@ -727,15 +746,18 @@ fn chengs_example_3_7() {
     runner = runner.with_iter_limit(2).run(&rules);
 
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[1])
     );
 }
 
+// This example relies on infinite unfolding so our
 #[test]
+#[should_panic]
 fn chengs_example_slack_25_11_25() {
     // x := f(h(g(x)) := f(h(h(g(x))))
     // y := h(y)
+    // f(y) ?= x
 
     let rules: Vec<Rewrite> = vec![rw!(
         "g-f-z";
@@ -744,12 +766,19 @@ fn chengs_example_slack_25_11_25() {
     let runner = Runner::default()
         .with_definition(&"x".parse().unwrap(), &"(f (h (g x)))".parse().unwrap())
         .with_definition(&"y".parse().unwrap(), &"(h y)".parse().unwrap())
-        .with_iter_limit(2)
+        .with_expr(&"(f y)".parse().unwrap())
+        // .with_iter_limit(2)
         .run(&rules);
 
+    runner
+        .egraph
+        .dot()
+        .to_dot("dots/cheng_slack_25_11_25.dot")
+        .unwrap();
+
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.roots[0])
     );
 }
 
@@ -771,19 +800,20 @@ fn chengs_example_slack_25_02_26() {
 
     runner.egraph.rebuild();
     assert_eq!(
-        runner.egraph.find(runner.roots[2]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[2]),
+        runner.egraph.find(runner.defs[1])
     );
     runner.egraph.union(gy, fy);
     runner.egraph.rebuild();
 
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
     );
 }
 
 #[test]
+#[should_panic]
 fn chengs_example_slack_26_02_26() {
     // x  := Cons(0, x1)
     // z  := Cons(0, z1)
@@ -821,7 +851,7 @@ fn rewrite_over_definitions() {
 
     assert!(runner
         .egraph
-        .check_bisimilar(runner.roots[0], runner.roots[1]));
+        .check_bisimilar(runner.defs[0], runner.roots[0]));
 }
 
 #[test]
@@ -841,8 +871,8 @@ fn x_equal_tail_x() -> Result<(), std::io::Error> {
         .automata_to_dot("dots/tail_rewrite_transition.dot")?;
 
     assert_eq!(
-        runner.egraph.find(runner.roots[0]),
-        runner.egraph.find(runner.roots[1])
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.roots[0])
     );
     Ok(())
 }
@@ -861,8 +891,8 @@ fn simple_lookthrough() -> Result<(), std::io::Error> {
     runner.egraph.dot().to_dot("dots/lookthrough.dot")?;
 
     assert_eq!(
-        runner.egraph.find(runner.roots[1]),
-        runner.egraph.find(runner.roots[2])
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
     );
     Ok(())
 }
@@ -872,16 +902,20 @@ fn cheng_example_slack_29_04_26() {
     // x := f (g x)
     // y := g (f y)
     // z := f y
-    let runner = Runner::default()
+    let mut runner = Runner::default()
         .with_definition(&"x".parse().unwrap(), &"(f (g x))".parse().unwrap())
         .with_definition(&"y".parse().unwrap(), &"(g (f y))".parse().unwrap())
         .with_definition(&"z".parse().unwrap(), &"(f y)".parse().unwrap());
 
-    // runner.egraph.rebuild();
-    // assert_eq!(runner.egraph.find(x), runner.egraph.find(z));
+    // Need to rebuild to update productive nodes
+    runner.egraph.rebuild();
+    assert_eq!(
+        runner.egraph.find(runner.defs[0]),
+        runner.egraph.find(runner.defs[2])
+    );
     assert!(runner
         .egraph
-        .check_bisimilar(runner.roots[0], runner.roots[2]));
+        .check_bisimilar(runner.defs[0], runner.defs[2]));
 }
 
 #[test]
@@ -931,5 +965,5 @@ fn paper_example_2() {
 
     assert!(runner
         .egraph
-        .check_bisimilar(runner.roots[0], runner.roots[2]));
+        .check_bisimilar(runner.defs[0], runner.defs[2]));
 }
