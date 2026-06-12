@@ -924,46 +924,54 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             {
                 return true;
             }
+            println!(
+                "Found unproductive cycle between {:?} and {:?}",
+                self.id_to_expr(id1),
+                self.id_to_expr(id2)
+            );
             return false;
         }
 
         // Traverse matching e-class nodes
-        for (node1, node2) in self.classes[&self.find(id1)]
-            .nodes
-            .iter()
-            .zip(&self.classes[&self.find(id2)].nodes)
-        {
-            if node1.matches(node2) {
-                let children1 = node1.children();
-                let children2 = node2.children();
-                if children1.len() != children2.len() {
-                    continue;
-                }
-                let mut visited_child = visited.clone();
-                let mut left_productive_child = left_productive.clone();
-                let mut right_productive_child = right_productive.clone();
-                visited_child.push((id1, id2));
-                left_productive_child.push(self.productive.contains(node1));
-                right_productive_child.push(self.productive.contains(node2));
-                let mut all_bisimilar = true;
-                for (child1, child2) in children1.iter().zip(children2.iter()) {
-                    if !self.check_bisimilar_internal(
-                        *child1,
-                        *child2,
-                        &mut visited_child,
-                        &mut left_productive_child,
-                        &mut right_productive_child,
-                    ) {
-                        all_bisimilar = false;
-                        break;
+        for node1 in self.classes[&self.find(id1)].nodes.iter() {
+            for node2 in self.classes[&self.find(id2)].nodes.iter() {
+                if node1.matches(node2) {
+                    let children1 = node1.children();
+                    let children2 = node2.children();
+                    if children1.len() != children2.len() {
+                        continue;
                     }
-                }
-                if all_bisimilar {
-                    return true;
+                    let mut visited_child = visited.clone();
+                    let mut left_productive_child = left_productive.clone();
+                    let mut right_productive_child = right_productive.clone();
+                    visited_child.push((id1, id2));
+                    left_productive_child.push(self.productive.contains(node1));
+                    right_productive_child.push(self.productive.contains(node2));
+                    let mut all_bisimilar = true;
+                    for (child1, child2) in children1.iter().zip(children2.iter()) {
+                        if !self.check_bisimilar_internal(
+                            *child1,
+                            *child2,
+                            &mut visited_child,
+                            &mut left_productive_child,
+                            &mut right_productive_child,
+                        ) {
+                            all_bisimilar = false;
+                            break;
+                        }
+                    }
+                    if all_bisimilar {
+                        return true;
+                    }
                 }
             }
         }
 
+        println!(
+            "Fell through to here {:?} and {:?}",
+            self.id_to_expr(id1),
+            self.id_to_expr(id2)
+        );
         return false;
     }
 
@@ -1254,7 +1262,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         if self.is_productive(&root_from) {
             let root_to = self.id_to_node(id2).clone();
-
             self.productive.insert(root_to);
         }
 

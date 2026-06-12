@@ -51,7 +51,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                 if let (Some(cw), Some(c1), Some(c2)) = (x(w), x(a), x(b)) {
                     Some((
                         (c1 + c2) % (1 << cw),
-                        format!("{}", c1 + c2).parse().unwrap(),
+                        format!("(+ {cw} {c1} {c2})").parse().unwrap(),
                     ))
                 } else {
                     None
@@ -61,7 +61,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                 if let (Some(cw), Some(c1), Some(c2)) = (x(w), x(a), x(b)) {
                     Some((
                         (c1 - c2) % (1 << cw),
-                        format!("{}", c1 - c2).parse().unwrap(),
+                        format!("(- {cw} {c1} {c2})").parse().unwrap(),
                     ))
                 } else {
                     None
@@ -71,7 +71,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                 if let (Some(cw), Some(c1), Some(c2)) = (x(w), x(a), x(b)) {
                     Some((
                         (c1 * c2) % (1 << cw),
-                        format!("{}", c1 * c2).parse().unwrap(),
+                        format!("(* {cw} {c1} {c2})").parse().unwrap(),
                     ))
                 } else {
                     None
@@ -81,7 +81,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                 if let (Some(cw), Some(c1), Some(c2)) = (x(w), x(a), x(b)) {
                     Some((
                         (c1 << c2) % (1 << cw),
-                        format!("{}", c1 << c2).parse().unwrap(),
+                        format!("(<< {cw} {c1} {c2})").parse().unwrap(),
                     ))
                 } else {
                     None
@@ -92,7 +92,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
                     let mask = (1 << (cw as i64)) - 1;
                     Some((
                         (cexpr >> cfrom) & mask,
-                        format!("{}", (cexpr >> cfrom) & mask).parse().unwrap(),
+                        format!("(extract {cw} {cfrom} {cexpr})").parse().unwrap(),
                     ))
                 } else {
                     None
@@ -164,7 +164,7 @@ fn make_rules() -> Vec<Rewrite> {
         rw!("add-to-extract"; "(+ ?w (<< ?w (extract ?w_high ?from ?x) ?from) (extract ?from 0 ?x))" => "(extract (+ 16 ?w_high ?from) 0 ?x)"),
         rw!("extract-of-bv"; "(extract ?w 0 (bv ?w ?x))" => "(bv ?w ?x)"),
         rw!("extract-of-add"; "(extract ?w 0 (+ ?w1 ?a ?b))" => "(+ ?w (extract ?w 0 ?a) (extract ?w 0 ?b))" if a_gt_b("?w1", "?w")),
-        // Cons rewrites todo
+        // Cons rewrites
         rw!("add-cons"; "(+ ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (+ ?w ?ah ?bh) (+ ?w ?at ?bt))"),
         rw!("sub-cons"; "(- ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (- ?w ?ah ?bh) (- ?w ?at ?bt))"),
         rw!("mul-cons"; "(* ?w (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (* ?w ?ah ?bh) (* ?w ?at ?bt))"),
@@ -214,11 +214,12 @@ fn a_gt_b(a: &'static str, b: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) 
 #[test]
 fn parity() {
     let runner = Runner::default()
+        .with_explanations_enabled()
         .with_definition(
             &"outSpec".parse().unwrap(),
             &"(Cons 0 (SEL 1 (bv 1 bitIn) (~ 1 outSpec) outSpec))"
                 .parse()
-                .unwrap(),
+                .unwrap(), // &"(Cons 0 (XOR 1 (bv 1 bitIn) outSpec))".parse().unwrap(),
         )
         .with_definition(
             &"count".parse().unwrap(),
@@ -228,10 +229,8 @@ fn parity() {
             &"outImpl".parse().unwrap(),
             &"(extract 1 0 count)".parse().unwrap(),
         )
-        .with_expr(&"(extract 1 0 count)".parse().unwrap())
-        .with_expr(&"outSpec".parse().unwrap())
         .disable_definition_rebuilding()
-        .with_iter_limit(5)
+        .with_iter_limit(7)
         .run(&make_rules());
 
     runner.egraph.dot().to_dot("dots/parity.dot").unwrap();
@@ -301,6 +300,7 @@ fn karatsuba_sequential_16bit() {
     let xlyh = format!("(* 32 {xl} {yh})");
 
     let mut runner = Runner::default()
+        .with_explanations_enabled()
         .with_definition(
             &"s1".parse().unwrap(),
             &"(Cons 0 (* 32 (bv 16 x) (bv 16 y)))".parse().unwrap(),
