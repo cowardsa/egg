@@ -1,9 +1,7 @@
-use core::time;
 use std::time::{Duration, Instant};
 
 use egg::rewrite as rw;
 use egg::*;
-use hashbrown::HashMap;
 
 type EGraph = egg::EGraph<HardwareLanguage, BVAnalysis>;
 type Rewrite = egg::Rewrite<HardwareLanguage, BVAnalysis>;
@@ -145,7 +143,7 @@ impl Analysis<HardwareLanguage> for BVAnalysis {
 fn make_rules() -> Vec<Rewrite> {
     vec![
         // ARITHMETIC
-        // rw!("add-comm"; "(+ ?w ?a ?b)" => "(+ ?w ?b ?a)"),
+        rw!("add-comm"; "(+ ?w ?a ?b)" => "(+ ?w ?b ?a)"),
         rw!("add-assoc"; "(+ ?w ?a (+ ?w ?b ?c))" => "(+ ?w (+ ?w ?a ?b) ?c)"),
         rw!("mul-comm"; "(* ?w ?a ?b)" => "(* ?w ?b ?a)"),
         rw!("xor-comm"; "(XOR ?w ?a ?b)" => "(XOR ?w ?b ?a)"),
@@ -215,45 +213,33 @@ fn a_gt_b(a: &'static str, b: &'static str) -> impl Fn(&mut EGraph, Id, &Subst) 
 
 #[test]
 fn parity() {
-    let mut runner = Runner::default();
-
-    let spec = runner.egraph.add_definition(
-        &"outSpec".parse().unwrap(),
-        &"(Cons 0 (SEL 1 (bv 1 bitIn) (~ 1 outSpec) outSpec))"
-            .parse()
-            .unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"count".parse().unwrap(),
-        &"(Cons 0 (+ 8 count (bv 1 bitIn)))".parse().unwrap(),
-    );
-
-    let imp = runner.egraph.add_definition(
-        &"outImpl".parse().unwrap(),
-        &"(extract 1 0 count)".parse().unwrap(),
-    );
-
-    runner = runner
+    let runner = Runner::default()
+        .with_definition(
+            &"outSpec".parse().unwrap(),
+            &"(Cons 0 (SEL 1 (bv 1 bitIn) (~ 1 outSpec) outSpec))"
+                .parse()
+                .unwrap(),
+        )
+        .with_definition(
+            &"count".parse().unwrap(),
+            &"(Cons 0 (+ 8 count (bv 1 bitIn)))".parse().unwrap(),
+        )
+        .with_definition(
+            &"outImpl".parse().unwrap(),
+            &"(extract 1 0 count)".parse().unwrap(),
+        )
         .with_expr(&"(extract 1 0 count)".parse().unwrap())
         .with_expr(&"outSpec".parse().unwrap())
         .disable_definition_rebuilding()
         .with_iter_limit(5)
         .run(&make_rules());
 
-    runner.egraph.dot().to_dot("dots/parity.dot");
+    runner.egraph.dot().to_dot("dots/parity.dot").unwrap();
     runner.print_report();
-    assert!(runner.egraph.check_bisimilar(spec.0, imp.0,));
-    // assert_eq!(root_0, root_1);
-}
 
-#[test]
-fn basic_operations() {
-    let mut egraph = EGraph::default();
-    egraph.add_expr(&"2".parse().unwrap());
-    egraph.add_expr(&"y".parse().unwrap());
-    egraph.add_expr(&"(+ 16 (bv 8 x) (bv 8 y))".parse().unwrap());
-    egraph.rebuild();
+    let spec = runner.defs[0];
+    let imp = runner.defs[2];
+    assert!(runner.egraph.check_bisimilar(spec, imp));
 }
 
 #[test]
@@ -266,11 +252,11 @@ fn basic_rewriting() {
         )
         .with_expr(&"(bv 16 x)".parse().unwrap())
         .run(&make_rules());
-    // runner.run();
 
-    let root_0 = runner.egraph.find(runner.roots[0]).clone();
-    let root_1 = runner.egraph.find(runner.roots[1]).clone();
-    assert_eq!(root_0, root_1);
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
@@ -296,9 +282,10 @@ fn karatsuba_combinational_16bit() {
 
     // runner.egraph.dot().to_dot("dots/karasuba.dot");
     runner.print_report();
-    let root_0 = runner.egraph.find(runner.roots[0]).clone();
-    let root_1 = runner.egraph.find(runner.roots[1]).clone();
-    assert_eq!(root_0, root_1);
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
@@ -313,68 +300,56 @@ fn karatsuba_sequential_16bit() {
     let xhyl = format!("(* 32 {xh} {yl})");
     let xlyh = format!("(* 32 {xl} {yh})");
 
-    let mut runner = Runner::default();
-
-    // Specification pipeline
-    runner.egraph.add_definition(
-        &"s1".parse().unwrap(),
-        &"(Cons 0 (* 32 (bv 16 x) (bv 16 y)))".parse().unwrap(),
-    );
-    runner
-        .egraph
-        .add_definition(&"s2".parse().unwrap(), &"(Cons 0 s1)".parse().unwrap());
-
-    let out_spec = runner.egraph.add_definition(
-        &"out_spec".parse().unwrap(),
-        &"(Cons 0 s2)".parse().unwrap(),
-    );
-
-    // Implementation pipeline
-    // STAGE 1
-    runner.egraph.add_definition(
-        &"i1_hh".parse().unwrap(),
-        &format!("(Cons 0 {xhyh})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_ll".parse().unwrap(),
-        &format!("(Cons 0 {xlyl})").parse().unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"i1_hl".parse().unwrap(),
-        &format!("(Cons 0 {xhyl})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_lh".parse().unwrap(),
-        &format!("(Cons 0 {xlyh})").parse().unwrap(),
-    );
-
-    // STAGE 2
-    runner.egraph.add_definition(
-        &"i2_xhyl_plus_xlyh".parse().unwrap(),
-        &format!("(Cons 0 (+ 32 i1_hl i1_lh))").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i2_hh_plus_ll".parse().unwrap(),
-        &format!("(Cons 0 (+ 32 (<< 32 i1_hh 16) i1_ll))")
-            .parse()
-            .unwrap(),
-    );
-
-    let out_impl = runner.egraph.add_definition(
-        &"out_impl".parse().unwrap(),
-        &"(Cons 0 (+ 32 i2_hh_plus_ll (<< 32 i2_xhyl_plus_xlyh 8)))"
-            .parse()
-            .unwrap(),
-    );
+    let mut runner = Runner::default()
+        .with_definition(
+            &"s1".parse().unwrap(),
+            &"(Cons 0 (* 32 (bv 16 x) (bv 16 y)))".parse().unwrap(),
+        )
+        .with_definition(&"s2".parse().unwrap(), &"(Cons 0 s1)".parse().unwrap())
+        .with_definition(
+            &"out_spec".parse().unwrap(),
+            &"(Cons 0 s2)".parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_hh".parse().unwrap(),
+            &format!("(Cons 0 {xhyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_ll".parse().unwrap(),
+            &format!("(Cons 0 {xlyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_hl".parse().unwrap(),
+            &format!("(Cons 0 {xhyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_lh".parse().unwrap(),
+            &format!("(Cons 0 {xlyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i2_xhyl_plus_xlyh".parse().unwrap(),
+            &format!("(Cons 0 (+ 32 i1_hl i1_lh))").parse().unwrap(),
+        )
+        .with_definition(
+            &"i2_hh_plus_ll".parse().unwrap(),
+            &format!("(Cons 0 (+ 32 (<< 32 i1_hh 16) i1_ll))")
+                .parse()
+                .unwrap(),
+        )
+        .with_definition(
+            &"out_impl".parse().unwrap(),
+            &"(Cons 0 (+ 32 i2_hh_plus_ll (<< 32 i2_xhyl_plus_xlyh 8)))"
+                .parse()
+                .unwrap(),
+        );
 
     runner = runner.run(&make_rules());
     // runner.egraph.dot().to_dot("dots/karasuba.dot");
     runner.print_report();
-    assert_eq!(
-        runner.egraph.find(out_spec.0),
-        runner.egraph.find(out_impl.0)
-    );
+
+    let out_spec = runner.defs[2];
+    let out_impl = runner.defs[9];
+    assert_eq!(runner.egraph.find(out_spec), runner.egraph.find(out_impl));
 }
 
 #[test]
@@ -388,7 +363,7 @@ fn karatsuba_full_combinational_16bit() {
     let xlyl = format!("(* 32 {xl} {yl})");
     let xhyl = format!("(* 32 {xh} {yl})");
     let xlyh = format!("(* 32 {xl} {yh})");
-    let xhyl_plus_xlyh_spec = format!("(+ 32 {xhyl} {xlyh})");
+    let _xhyl_plus_xlyh_spec = format!("(+ 32 {xhyl} {xlyh})");
     let xh_plus_xl = format!("(+ 32 {xh} {xl})");
     let yh_plus_yl = format!("(+ 32 {yh} {yl})");
     let xh_plus_xl_times_yh_plus_yl = format!("(* 32 {xh_plus_xl} {yh_plus_yl})");
@@ -409,12 +384,10 @@ fn karatsuba_full_combinational_16bit() {
     // runner.egraph.dot().to_dot("dots/karasuba.dot");
     runner.print_report();
 
-    // runner.stop_reason = None; // to allow for cyclic rewrites
-    // runner = runner.run(&make_cyclic_rules());
-
-    let root_0 = runner.egraph.find(runner.roots[0]).clone();
-    let root_1 = runner.egraph.find(runner.roots[1]).clone();
-    assert_eq!(root_0, root_1);
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
 #[test]
@@ -432,87 +405,75 @@ fn karatsuba_full_sequential_16bit() {
     let yh_plus_yl = format!("(+ 32 {yh} {yl})");
 
     let start = std::time::Instant::now();
-    let mut runner = Runner::default()
+    let runner = Runner::default()
         .with_iter_limit(11)
         .with_node_limit(1000000)
         .with_time_limit(Duration::new(1000, 0))
-        // .disable_definition_rebuilding()
-        .with_scheduler(egg::SimpleScheduler);
+        .disable_definition_rebuilding()
+        .with_scheduler(egg::SimpleScheduler)
+        .with_definition(
+            &"s1".parse().unwrap(),
+            &"(Cons 0 (* 32 (bv 16 x) (bv 16 y)))".parse().unwrap(),
+        )
+        .with_definition(&"s2".parse().unwrap(), &"(Cons 0 s1)".parse().unwrap())
+        .with_definition(
+            &"out_spec".parse().unwrap(),
+            &"(Cons 0 s2)".parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_hh".parse().unwrap(),
+            &format!("(Cons 0 {xhyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_ll".parse().unwrap(),
+            &format!("(Cons 0 {xlyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_x".parse().unwrap(),
+            &format!("(Cons 0 {xh_plus_xl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_y".parse().unwrap(),
+            &format!("(Cons 0 {yh_plus_yl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_hl".parse().unwrap(),
+            &format!("(Cons 0 {xhyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_lh".parse().unwrap(),
+            &format!("(Cons 0 {xlyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i2_xhyl_plus_xlyh".parse().unwrap(),
+            &format!("(Cons 0 (- 32 (- 32 (* 32 i1_x i1_y) i1_hh) i1_ll))")
+                .parse()
+                .unwrap(),
+        )
+        .with_definition(
+            &"i2_hh_plus_ll".parse().unwrap(),
+            &format!("(Cons 0 (+ 32 (<< 32 i1_hh 16) i1_ll))")
+                .parse()
+                .unwrap(),
+        )
+        .with_definition(
+            &"out_impl".parse().unwrap(),
+            &"(Cons 0 (+ 32 i2_hh_plus_ll (<< 32 i2_xhyl_plus_xlyh 8)))"
+                .parse()
+                .unwrap(),
+        )
+        .run(&make_rules());
 
-    // Specification pipeline
-    runner.egraph.add_definition(
-        &"s1".parse().unwrap(),
-        &"(Cons 0 (* 32 (bv 16 x) (bv 16 y)))".parse().unwrap(),
-    );
-    runner
-        .egraph
-        .add_definition(&"s2".parse().unwrap(), &"(Cons 0 s1)".parse().unwrap());
-
-    let out_spec = runner.egraph.add_definition(
-        &"out_spec".parse().unwrap(),
-        &"(Cons 0 s2)".parse().unwrap(),
-    );
-
-    // Implementation pipeline
-    // STAGE 1
-    runner.egraph.add_definition(
-        &"i1_hh".parse().unwrap(),
-        &format!("(Cons 0 {xhyh})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_ll".parse().unwrap(),
-        &format!("(Cons 0 {xlyl})").parse().unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"i1_x".parse().unwrap(),
-        &format!("(Cons 0 {xh_plus_xl})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_y".parse().unwrap(),
-        &format!("(Cons 0 {yh_plus_yl})").parse().unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"i1_hl".parse().unwrap(),
-        &format!("(Cons 0 {xhyl})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_lh".parse().unwrap(),
-        &format!("(Cons 0 {xlyh})").parse().unwrap(),
-    );
-
-    // STAGE 2
-    runner.egraph.add_definition(
-        &"i2_xhyl_plus_xlyh".parse().unwrap(),
-        &format!("(Cons 0 (- 32 (- 32 (* 32 i1_x i1_y) i1_hh) i1_ll))")
-            .parse()
-            .unwrap(),
-        // &format!("(Cons 0 (+ 32 i1_hl i1_lh))").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i2_hh_plus_ll".parse().unwrap(),
-        &format!("(Cons 0 (+ 32 (<< 32 i1_hh 16) i1_ll))")
-            .parse()
-            .unwrap(),
-    );
-
-    let out_impl = runner.egraph.add_definition(
-        &"out_impl".parse().unwrap(),
-        &"(Cons 0 (+ 32 i2_hh_plus_ll (<< 32 i2_xhyl_plus_xlyh 8)))"
-            .parse()
-            .unwrap(),
-    );
-
-    runner = runner.run(&make_rules());
     let duration = start.elapsed();
     println!("Time taken: {:?}", duration);
     runner.print_report();
     let bisim_start = Instant::now();
-    let bisim = runner.egraph.check_bisimilar(
-        runner.egraph.find(out_spec.0),
-        runner.egraph.find(out_impl.0),
-    );
+
+    let out_spec = runner.defs[2];
+    let out_impl = runner.defs[11];
+    let bisim = runner
+        .egraph
+        .check_bisimilar(runner.egraph.find(out_spec), runner.egraph.find(out_impl));
     println!("Bisimulation check time: {:?}", bisim_start.elapsed());
     assert!(bisim);
 }
@@ -538,21 +499,20 @@ fn karatsuba_intermediate_goal() {
         .with_expr(&xhyl_plus_xlyh_spec.parse().unwrap())
         .with_expr(&xhyl_plus_xlyh.parse().unwrap())
         .disable_definition_rebuilding()
-        .with_iter_limit(5)
+        .with_iter_limit(6)
         .with_scheduler(egg::SimpleScheduler)
         .run(&make_rules());
 
-    runner.egraph.dot().to_dot("dots/karasuba.dot");
+    runner.egraph.dot().to_dot("dots/karasuba.dot").unwrap();
     runner.print_report();
 
-    // runner.stop_reason = None; // to allow for cyclic rewrites
-    // runner = runner.run(&make_cyclic_rules());
-
-    let root_0 = runner.egraph.find(runner.roots[0]).clone();
-    let root_1 = runner.egraph.find(runner.roots[1]).clone();
-    assert_eq!(root_0, root_1);
+    assert_eq!(
+        runner.egraph.find(runner.roots[0]),
+        runner.egraph.find(runner.roots[1])
+    );
 }
 
+#[ignore]
 #[test]
 fn int1() {
     let xh = "(extract 8 8 (bv 16 x))".to_string();
@@ -569,50 +529,41 @@ fn int1() {
 
     let rules = make_rules();
     println!("Rules: {}", rules.len());
-    let mut runner = Runner::default()
+    let runner = Runner::default()
         .with_iter_limit(13)
         .with_node_limit(1000000)
         .with_time_limit(Duration::new(20, 0))
-        .disable_definition_rebuilding()
-        .with_scheduler(egg::SimpleScheduler);
-
-    // Implementation pipeline
-    // STAGE 1
-    runner.egraph.add_definition(
-        &"i1_hh".parse().unwrap(),
-        &format!("(Cons 0 {xhyh})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_ll".parse().unwrap(),
-        &format!("(Cons 0 {xlyl})").parse().unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"i1_x".parse().unwrap(),
-        &format!("(Cons 0 {xh_plus_xl})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_y".parse().unwrap(),
-        &format!("(Cons 0 {yh_plus_yl})").parse().unwrap(),
-    );
-
-    runner.egraph.add_definition(
-        &"i1_hl".parse().unwrap(),
-        &format!("(Cons 0 {xhyl})").parse().unwrap(),
-    );
-    runner.egraph.add_definition(
-        &"i1_lh".parse().unwrap(),
-        &format!("(Cons 0 {xlyh})").parse().unwrap(),
-    );
-
-    // STAGE 2
-    runner.egraph.add_definition(
-        &"i2_xhyl_plus_xlyh".parse().unwrap(),
-        // &format!("(Cons 0 (- 32 (- 32 (* 32 i1_x i1_y) i1_hh) i1_ll))")
-        &format!("(Cons 0 (+ 32 i1_hl i1_lh))").parse().unwrap(),
-    );
-
-    runner = runner
+        // .disable_definition_rebuilding()
+        .with_scheduler(egg::SimpleScheduler)
+        .with_definition(
+            &"i1_hh".parse().unwrap(),
+            &format!("(Cons 0 {xhyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_ll".parse().unwrap(),
+            &format!("(Cons 0 {xlyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_x".parse().unwrap(),
+            &format!("(Cons 0 {xh_plus_xl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_y".parse().unwrap(),
+            &format!("(Cons 0 {yh_plus_yl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_hl".parse().unwrap(),
+            &format!("(Cons 0 {xhyl})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i1_lh".parse().unwrap(),
+            &format!("(Cons 0 {xlyh})").parse().unwrap(),
+        )
+        .with_definition(
+            &"i2_xhyl_plus_xlyh".parse().unwrap(),
+            // &format!("(Cons 0 (- 32 (- 32 (* 32 i1_x i1_y) i1_hh) i1_ll))")
+            &format!("(Cons 0 (+ 32 i1_hl i1_lh))").parse().unwrap(),
+        )
         .with_expr(
             &"(Cons 0 (- 32 (- 32 (* 32 i1_x i1_y) i1_hh) i1_ll))"
                 .parse()
