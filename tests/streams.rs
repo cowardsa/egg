@@ -194,12 +194,14 @@ fn make_rules() -> Vec<Rewrite> {
         rw!("apply-incr"; "(App incr ?a)" => "(+ ?a 1)"),
         rw!("tail-cons"; "(Tail (Cons ?a ?b))" => "?b"),
         rw!("add-cons"; "(+ ?a (Cons ?b ?c))" => "(Cons (+ (Head ?a) ?b) (+ (Tail ?a) ?c))"),
-        rw!("lt-cons-right"; "(< ?a (Cons ?b ?c))" => "(Cons (< (Head ?a) ?b) (< (Tail ?a) ?c))"),
-        rw!("lt-cons-left"; "(< (Cons ?b ?c) ?a)" => "(Cons (< ?b (Head ?a)) (< ?c (Tail ?a)))"),
+        // rw!("lt-cons-right"; "(< ?a (Cons ?b ?c))" => "(Cons (< (Head ?a) ?b) (< (Tail ?a) ?c))"),
+        rw!("lt-cons"; "(< (Cons ?ah ?at) (Cons ?bh ?bt))" => "(Cons (< ?ah ?bh) (< ?at ?bt))"),
+        // rw!("lt-cons-left"; "(< (Cons ?b ?c) ?a)" => "(Cons (< ?b (Head ?a)) (< ?c (Tail ?a)))"),
         rw!("lt-ite"; "(< (ite ?cond ?a ?b) ?c)" => "(ite ?cond (< ?a ?c) (< ?b ?c))"),
         // Constant streams
         rw!("const-stream"; "(ConstStream ?a)" => "(Cons ?a (ConstStream ?a))" if is_const("?a")),
         rw!("rev-const-stream"; "(Cons ?a ?b)" => "(ConstStream ?a)" if is_const_stream("?a", "?b")),
+        // rw!("const-ite-stream"; "(Cons ?a (ite ?cond ?a ?b))" => "(ConstStream ?a)" if is_const_stream("?a", "?cond")),
         rw!("head-const"; "(Head ?a)" => "?a" if is_const("?a")),
         rw!("tail-const"; "(Tail ?a)" => "?a" if is_const("?a")),
         rw!("neq-same"; "(!= ?a ?a)" => "false"),
@@ -514,18 +516,19 @@ fn simple_dfa() {
 
 #[test]
 fn my_fun_zucker() -> Result<(), std::io::Error> {
-    let runner = Runner::default()
+    let mut runner = Runner::default()
         .with_definition(&"i".parse().unwrap(), &"(Cons 1 i)".parse().unwrap())
         .with_definition(
             &"j".parse().unwrap(),
-            &"(Cons 1 (ite (< j 20) i k))".parse().unwrap(),
+            &"(Cons 1 (ite (< j (ConstStream 20)) i k))".parse().unwrap(),
         )
-        .with_expr(&"(< j 20)".parse().unwrap())
-        .with_iter_limit(2)
+        .with_iter_limit(6)
         .run(&make_rules());
     runner.egraph.dot().to_dot("dots/my_fun_zucker.dot")?;
 
-    let cond = runner.roots[0];
+    let cond = runner
+        .egraph
+        .add_expr(&"(< j (ConstStream 20))".parse().unwrap());
     println!("j elements: {:?}", runner.egraph[cond].data.elements);
     Ok(())
 }
@@ -966,4 +969,18 @@ fn paper_example_2() {
     assert!(runner
         .egraph
         .check_bisimilar(runner.defs[0], runner.defs[2]));
+}
+
+#[test]
+fn cheng_counter_example_13_06_26() {
+    // Basic example inspired by Cocaml
+    let runner = Runner::default()
+        .with_definition(&"x".parse().unwrap(), &"(+ 0 (f x))".parse().unwrap())
+        .with_definition(&"y".parse().unwrap(), &"(+ 0 y)".parse().unwrap())
+        .disable_definition_rebuilding()
+        .run(&make_rules());
+
+    assert!(runner
+        .egraph
+        .check_bisimilar(runner.defs[0], runner.defs[1]));
 }
