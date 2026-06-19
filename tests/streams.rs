@@ -419,7 +419,8 @@ fn cocaml_elements() {
 //----------------------------------------------------------------------------//
 #[test]
 fn commutative() {
-    let mut runner: Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let mut runner: Runner<StreamLanguage, StreamsAnalysis> =
+        Runner::default().disable_definition_rebuilding();
     // let mut egraph = EGraph::<StreamLanguage, ()>::default();
     // ab =: cons( (a + b) ab)
     // ba =: cons( (b + a) ba)
@@ -432,8 +433,9 @@ fn commutative() {
     let ids_ba = runner.egraph.add_definition(&ba, &bastream);
 
     runner = runner.run(&make_rules());
-    runner.egraph.dot().automata_to_dot("dots/phil_example.dot");
-    assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+    // runner.egraph.dot().automata_to_dot("dots/phil_example.dot");
+    // assert_eq!(runner.egraph.find(ids_ab.0), runner.egraph.find(ids_ba.0));
+    assert!(runner.egraph.check_alpha_equivalence(ids_ab.0, ids_ba.0));
 }
 
 #[test]
@@ -524,8 +526,9 @@ fn smt_successor() {
     let mut egraph = EGraph::default();
     let a = egraph.add_definition(&"a".parse().unwrap(), &"(S a)".parse().unwrap());
     let b = egraph.add_definition(&"b".parse().unwrap(), &"(S (S b))".parse().unwrap());
-    egraph.rebuild();
-    assert_eq!(egraph.find(a.0), egraph.find(b.0));
+    // egraph.rebuild();
+    // assert_eq!(egraph.find(a.0), egraph.find(b.0));
+    assert!(egraph.check_alpha_equivalence(a.0, b.0));
 }
 
 //----------------------------------------------------------------------------//
@@ -999,7 +1002,7 @@ fn cheng_counter_example_13_06_26() {
 
 #[test]
 fn scalability_vs_slotted() {
-    for num_vars in 2..50 {
+    for num_vars in 50..100 {
         let mut total_time = Duration::new(0, 0);
         let mut egraph = EGraph::default();
         for i in 0..num_vars {

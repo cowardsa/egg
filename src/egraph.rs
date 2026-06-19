@@ -981,6 +981,86 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         return false;
     }
 
+    /// [`check_alpha_equivalence`]: EGraph::check_alpha_equivalence()
+    pub fn check_alpha_equivalence(&self, id1: Id, id2: Id) -> bool {
+        let canon_id1 = self.find(id1);
+        let canon_id2 = self.find(id2);
+        if canon_id1 == canon_id2 {
+            return true;
+        }
+        assert!(self.definitions.contains_key(&canon_id1));
+        assert!(self.definitions.contains_key(&canon_id2));
+        if self.find(self.definitions[&canon_id1]) == self.find(self.definitions[&canon_id2]) {
+            return true;
+        }
+
+        return self.check_alpha_equivalence_internal(id1, id2, &mut vec![], &mut false);
+    }
+
+    fn check_alpha_equivalence_internal(
+        &self,
+        id1: Id,
+        id2: Id,
+        visited: &mut Vec<(Id, Id)>,
+        seen_def: &mut bool,
+    ) -> bool {
+        // Trivially bisimilar
+        if self.find(id1) == self.find(id2) {
+            return true;
+        }
+
+        // Have found a cycle, check if it is productive on both left and right
+        if let Some(index) = visited.iter().position(|&x| x == (id1, id2)) {
+            return *seen_def;
+        }
+
+        let mut new_visited = visited.clone();
+        new_visited.push((id1, id2));
+
+        // Traverse matching e-class nodes
+        for node1 in self.classes[&self.find(id1)].nodes.iter() {
+            for node2 in self.classes[&self.find(id2)].nodes.iter() {
+                if node1.matches(node2) {
+                    let children1 = node1.children();
+                    let children2 = node2.children();
+                    if children1.len() != children2.len() {
+                        continue;
+                    }
+
+                    let mut all_bisimilar = true;
+                    for (child1, child2) in children1.iter().zip(children2.iter()) {
+                        if !self.check_alpha_equivalence_internal(
+                            *child1,
+                            *child2,
+                            &mut new_visited,
+                            seen_def,
+                        ) {
+                            all_bisimilar = false;
+                            break;
+                        }
+                    }
+                    if all_bisimilar {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Traverse defintional edge on left
+        if let Some(def1) = self.definitions.get(&self.find(id1)) {
+            if let Some(def2) = self.definitions.get(&self.find(id2)) {
+                return self.check_alpha_equivalence_internal(
+                    *def1,
+                    *def2,
+                    &mut new_visited,
+                    &mut true,
+                );
+            }
+        }
+
+        return false;
+    }
+
     /// Similar to [`add_expr`](EGraph::add_expr) but the `Id` returned may not be canonical
     ///
     /// Calling [`id_to_expr`](EGraph::id_to_expr) on this `Id` return a copy of `expr` when explanations are enabled
@@ -1715,25 +1795,15 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 transitions = z.get(&state_id).unwrap().clone();
             }
 
-            for enode in self[canon_transition].nodes.iter() {
-                if enode.is_leaf() {
-                    continue;
+            for node in self[*state].iter() {
+                if node.is_leaf() {
+                    let partition_tuple = vec![partmap.get(&canon_transition).unwrap().clone()];
+                    let new_discriminant = node.discriminant();
+                    transitions.insert((format!("{:?}", new_discriminant), partition_tuple));
+                    z.insert(state_id.clone(), transitions.clone());
+                    break;
                 }
-                // println!("{} -> {:?}", transition, enode);
-                let partition_tuple: Vec<Vec<Id>> = enode
-                    .children()
-                    .iter()
-                    .map(|x| {
-                        partmap
-                            .get(x)
-                            .map(|partition| partition.clone())
-                            .unwrap_or_else(|| vec![x.clone()])
-                    })
-                    .collect();
-                transitions.insert((format!("{:?}", enode.discriminant()), partition_tuple));
             }
-
-            z.insert(state_id.clone(), transitions.clone());
         }
 
         if debug {
@@ -1821,49 +1891,21 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
         for part in partmap.values() {
             let mut base_def = None;
-            let mut base_rw = None;
             for j in part.iter() {
                 // Only union definitions with definitions, and rewrites with rewrites
-                if self.definitions.contains_key(j) {
-                    if base_def.is_none() {
-                        base_def = Some(j);
-                    } else {
-                        if debug {
-                            println!(
-                                "Union Definitions {:?} and {:?}",
-                                self[*j].nodes[0],
-                                self[*base_def.unwrap()].nodes[0]
-                            );
-                        }
-                        self.union_instantiations(
-                            &self.id_to_pattern(*j, &Default::default()).0.ast,
-                            &self
-                                .id_to_pattern(*base_def.unwrap(), &Default::default())
-                                .0
-                                .ast,
-                            &Default::default(),
-                            "Automata Minimization",
-                        );
-                    }
+                if base_def.is_none() {
+                    base_def = Some(j);
                 } else {
-                    if base_rw.is_none() {
-                        base_rw = Some(j);
-                    } else {
-                        if debug {
-                            // println!("Union Rewrites {} and {}", j, base_rw.unwrap());
-                        }
-                        self.union_instantiations(
-                            &self.id_to_pattern(*j, &Default::default()).0.ast,
-                            &self
-                                .id_to_pattern(*base_rw.unwrap(), &Default::default())
-                                .0
-                                .ast,
-                            &Default::default(),
-                            "Automata Minimization",
-                        );
-                    }
+                    self.union_instantiations(
+                        &self.id_to_pattern(*j, &Default::default()).0.ast,
+                        &self
+                            .id_to_pattern(*base_def.unwrap(), &Default::default())
+                            .0
+                            .ast,
+                        &Default::default(),
+                        "Automata Minimization",
+                    );
                 }
-                // self.union(*j, part[0]);
             }
         }
     }
