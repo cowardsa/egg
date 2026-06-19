@@ -1,6 +1,7 @@
 use egg::rewrite as rw;
 use egg::*;
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 type EGraph = egg::EGraph<StreamLanguage, StreamsAnalysis>;
 type Rewrite = egg::Rewrite<StreamLanguage, StreamsAnalysis>;
@@ -25,6 +26,7 @@ define_language! {
         "f" = F([Id; 1]),
         "g" = G([Id; 1]),
         "h" = H([Id; 1]),
+        "w" = W([Id; 2]),
         "Map" = Map([Id; 2]),
         "App" = App([Id; 2]),
         Symbol(Symbol),
@@ -582,12 +584,15 @@ fn russel_fig_6() -> Result<(), std::io::Error> {
     // Rewriting lhs != rhs --> xt*y != 2*y --> xt != 2 --> false
     // TODO
     let mut runner: egg::Runner<StreamLanguage, StreamsAnalysis> = Runner::default();
+    let two = runner
+        .egraph
+        .add_definition(&"two".parse().unwrap(), &"(Cons 2 two)".parse().unwrap());
     let xt = runner
         .egraph
         .add_definition(&"xt".parse().unwrap(), &"(+ x 8)".parse().unwrap());
     let x = runner
         .egraph
-        .add_definition(&"x".parse().unwrap(), &"(Cons -6 x)".parse().unwrap());
+        .add_definition(&"x".parse().unwrap(), &"(Cons -6 xt)".parse().unwrap());
 
     let z = runner.egraph.add_definition(
         &"z".parse().unwrap(),
@@ -601,6 +606,7 @@ fn russel_fig_6() -> Result<(), std::io::Error> {
     // runner.egraph.rebuild();
     runner.egraph.dot().to_dot("dots/russel_fig_6.dot")?;
 
+    assert!(runner.egraph.check_bisimilar(two.0, xt.0));
     assert_eq!(runner.egraph.find(z.0), runner.egraph.find(target.0));
     Ok(())
 }
@@ -969,5 +975,45 @@ fn paper_example_2() {
         .to_dot("dots/paper_example_2.dot")
         .unwrap();
 
-    runner.egraph.check_bisimilar(ones.0, one_prime.0);
+    assert!(runner.egraph.check_bisimilar(ones.0, one_prime.0));
+}
+
+#[test]
+fn cheng_counter_example_13_06_26() {
+    // x := f(x) + 0
+    // y :=
+    let mut runner = Runner::default();
+
+    let x = runner
+        .egraph
+        .add_definition(&"x".parse().unwrap(), &"(+ 0 (f x))".parse().unwrap());
+    let y = runner
+        .egraph
+        .add_definition(&"y".parse().unwrap(), &"(+ 0 (g y))".parse().unwrap());
+
+    runner = runner.run(&make_rules());
+    runner.egraph.dot().to_dot("dots/cex.dot").unwrap();
+
+    assert!(!runner.egraph.check_bisimilar(x.0, y.0));
+}
+
+#[test]
+fn scalability_vs_slotted() {
+    for num_vars in 2..50 {
+        let mut total_time = Duration::new(0, 0);
+        let mut egraph = EGraph::default();
+        for i in 0..num_vars {
+            let next_var = (i + 1) % num_vars;
+            let x = format!("x{i}");
+            let def = format!("(w x{i} x{next_var})");
+            let start = Instant::now();
+            egraph.add_definition(&x.parse().unwrap(), &def.parse().unwrap());
+            total_time += start.elapsed();
+        }
+        let start = Instant::now();
+        egraph.rebuild();
+        assert_eq!(egraph.number_of_classes(), 2);
+        total_time += start.elapsed();
+        println!("Num Vars {num_vars}, Time {:?}", total_time);
+    }
 }

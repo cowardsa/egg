@@ -1,7 +1,7 @@
 use crate::*;
 use std::{
     borrow::BorrowMut,
-    fmt::{self, Debug, Display},
+    fmt::{self, Alignment::Left, Debug, Display},
     marker::PhantomData,
 };
 
@@ -910,38 +910,36 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
 
         // Traverse matching e-class nodes
-        for (node1, node2) in self.classes[&self.find(id1)]
-            .nodes
-            .iter()
-            .zip(&self.classes[&self.find(id2)].nodes)
-        {
-            if node1.matches(node2) {
-                let children1 = node1.children();
-                let children2 = node2.children();
-                if children1.len() != children2.len() {
-                    continue;
-                }
-                let mut visited_child = visited.clone();
-                let mut left_productive_child = left_productive.clone();
-                let mut right_productive_child = right_productive.clone();
-                visited_child.push((id1, id2));
-                left_productive_child.push(false);
-                right_productive_child.push(false);
-                let mut all_bisimilar = true;
-                for (child1, child2) in children1.iter().zip(children2.iter()) {
-                    if !self.check_bisimilar_internal(
-                        *child1,
-                        *child2,
-                        &mut visited_child,
-                        &mut left_productive_child,
-                        &mut right_productive_child,
-                    ) {
-                        all_bisimilar = false;
-                        break;
+        for node1 in self.classes[&self.find(id1)].nodes.iter() {
+            for node2 in self.classes[&self.find(id2)].nodes.iter() {
+                if node1.matches(node2) {
+                    let children1 = node1.children();
+                    let children2 = node2.children();
+                    if children1.len() != children2.len() {
+                        continue;
                     }
-                }
-                if all_bisimilar {
-                    return true;
+                    let mut visited_child = visited.clone();
+                    let mut left_productive_child = left_productive.clone();
+                    let mut right_productive_child = right_productive.clone();
+                    visited_child.push((id1, id2));
+                    left_productive_child.push(false);
+                    right_productive_child.push(false);
+                    let mut all_bisimilar = true;
+                    for (child1, child2) in children1.iter().zip(children2.iter()) {
+                        if !self.check_bisimilar_internal(
+                            *child1,
+                            *child2,
+                            &mut visited_child,
+                            &mut left_productive_child,
+                            &mut right_productive_child,
+                        ) {
+                            all_bisimilar = false;
+                            break;
+                        }
+                    }
+                    if all_bisimilar {
+                        return true;
+                    }
                 }
             }
         }
